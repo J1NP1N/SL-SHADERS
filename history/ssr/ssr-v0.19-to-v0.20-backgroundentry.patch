@@ -1,0 +1,202 @@
+--- v0.19/SL_SSR_v0_1_LegacyFirst.fx
++++ v0.20/SL_SSR_v0_1_LegacyFirst.fx
+@@ -1,7 +1,7 @@
+-// SL_SSR_v0_19_TraceBudget.fx
++// SL_SSR_v0_20_BackgroundEntry.fx
+ // Firestorm-native-data screen-space reflections for ReShade.
+ //
+-// v0.18 lineage / current goals:
++// v0.20 lineage / current goals:
+ //   - legacy SL materials first
+ //   - exact Firestorm SL_DEPTH + SL_NORMALS
+ //   - exact Firestorm projection/inverse projection from SLProbeLighting
+@@ -19,6 +19,7 @@
+ //   - native PBR alpha-blend path probe published as SL_PBR_ALPHA_MASK
+ //   - half-resolution ray tracing for practical cost
+ //   - trace budget large enough to reach configured max distance at default growth
++//   - recover background-to-geometry silhouette entries that cannot form a normal depth sign pair
+ //   - limited skip-through for oversized foreground disocclusion crossings
+ //   - diagnostic classification of every geometry-trace rejection path
+ //
+@@ -122,6 +123,22 @@
+     ui_min = 0.01; ui_max = 1.0; ui_step = 0.01;
+ > = 0.18;
+ 
++uniform int SSRBackgroundEntryRecovery
++<
++    ui_label = "Background Entry Recovery";
++    ui_tooltip = "Allows a reflected ray that was over background on the previous sample to accept the first geometry silhouette entry when that geometry is already in front of the ray. This targets upside-down silhouette-shaped BLUE holes.";
++    ui_type = "slider";
++    ui_min = 0; ui_max = 1;
++> = 1;
++
++uniform float SSRBackgroundEntryConfidence
++<
++    ui_label = "Background Entry Confidence";
++    ui_tooltip = "Confidence multiplier for hits recovered specifically from a background-to-geometry silhouette entry.";
++    ui_type = "drag";
++    ui_min = 0.10; ui_max = 1.00; ui_step = 0.05;
++> = 0.75;
++
+ uniform int SSRDisocclusionSkips
+ <
+     ui_label = "Disocclusion Skips";
+@@ -259,7 +276,8 @@
+         "PBR alpha-blend path probe mask\0"
+         "Reflection base removal x10\0"
+         "Disocclusion-skip hit mask\0"
+-        "Ray termination reason\0";
++        "Ray termination reason\0"
++        "Background-entry recovered hit mask\0";
+ > = 0;
+ 
+ uniform float SSRDebugGain
+@@ -671,12 +689,14 @@
+     out float hitDistance,
+     out float confidence,
+     out float disocclusionUsed,
++    out float backgroundEntryUsed,
+     out float rejectReason)
+ {
+     hitUV = 0.0;
+     hitDistance = 0.0;
+     confidence = 0.0;
+     disocclusionUsed = 0.0;
++    backgroundEntryUsed = 0.0;
+     // v0.18 diagnostic codes on a failed trace:
+     // 1 = reflected ray points toward/through camera
+     // 2 = projected ray left the valid screen/view
+@@ -698,6 +718,7 @@
+     float previousT = 0.0;
+     float previousDelta = -1e6;
+     bool previousValid = false;
++    bool previousWasBackground = false;
+     int disocclusionSkipsUsed = 0;
+ 
+     float t = max(SSRInitialStep, 0.01);
+@@ -718,10 +739,16 @@
+             break;
+         }
+ 
+-        // Background keeps the march alive; no depth surface to cross yet.
++        // v0.20: keep background as a valid negative-side bracket. Previously
++        // background cleared previousValid, so background -> geometry with the
++        // first geometry sample already at delta >= 0 could never form the
++        // required negative-to-positive pair. That produces silhouette-shaped
++        // BLUE holes in reflected geometry.
+         if (delta < -9e5)
+         {
+-            previousValid = false;
++            previousValid = true;
++            previousWasBackground = true;
++            previousDelta = -1e6;
+             previousT = t;
+             t *= SSRStepGrowth;
+             continue;
+@@ -729,6 +756,7 @@
+ 
+         if (previousValid && previousDelta < 0.0 && delta >= 0.0)
+         {
++            bool backgroundEntry = previousWasBackground;
+             float lo = previousT;
+             float hi = t;
+             float2 refineUV = uv;
+@@ -764,13 +792,24 @@
+             float2 finalUV;
+             float finalDelta;
+ 
+-            if (EvaluateRayDepth(finalPos, finalUV, finalDelta) &&
+-                finalDelta >= 0.0 &&
+-                finalDelta <= SSRThickness)
++            bool finalDepthValid = EvaluateRayDepth(finalPos, finalUV, finalDelta);
++            bool standardHit = finalDepthValid && finalDelta >= 0.0 && finalDelta <= SSRThickness;
++            bool recoveredBackgroundEntry =
++                finalDepthValid &&
++                backgroundEntry &&
++                SSRBackgroundEntryRecovery > 0 &&
++                finalDelta >= 0.0;
++
++            if (standardHit || recoveredBackgroundEntry)
+             {
+                 hitUV = finalUV;
+                 hitDistance = hi;
+                 confidence = EdgeConfidence(finalUV) * DistanceConfidence(hi);
++                if (backgroundEntry)
++                {
++                    backgroundEntryUsed = 1.0;
++                    confidence *= saturate(SSRBackgroundEntryConfidence);
++                }
+                 if (disocclusionSkipsUsed > 0)
+                 {
+                     disocclusionUsed = 1.0;
+@@ -796,6 +835,7 @@
+                 disocclusionSkipsUsed++;
+                 disocclusionUsed = 1.0;
+                 previousValid = false;
++                previousWasBackground = false;
+                 previousDelta = -1e6;
+                 previousT = t;
+                 t += max(SSRThickness * 1.5, SSRInitialStep);
+@@ -807,6 +847,7 @@
+         }
+ 
+         previousValid = true;
++        previousWasBackground = false;
+         previousT = t;
+         previousDelta = delta;
+         t *= SSRStepGrowth;
+@@ -989,7 +1030,7 @@
+ {
+     // Ray-hit and raw-hit-color diagnostics test geometry/scene transport only.
+     // They must remain useful even if the material/specular semantic is missing.
+-    const bool geometryDebug = (SSRDisplayMode == 2 || SSRDisplayMode == 11 || SSRDisplayMode == 22 || SSRDisplayMode == 23);
++    const bool geometryDebug = (SSRDisplayMode == 2 || SSRDisplayMode == 11 || SSRDisplayMode == 22 || SSRDisplayMode == 23 || SSRDisplayMode == 24);
+ 
+     if (!(geometryDebug ? SSRTraceReady() : SSRReady()) ||
+         !InsideFirestormWorld(uv))
+@@ -1022,9 +1063,10 @@
+     float hitDistance;
+     float confidence;
+     float disocclusionUsed;
++    float backgroundEntryUsed;
+     float rejectReason;
+ 
+-    bool traceAccepted = TraceSSR(viewPos, normal, rayDir, hitUV, hitDistance, confidence, disocclusionUsed, rejectReason);
++    bool traceAccepted = TraceSSR(viewPos, normal, rayDir, hitUV, hitDistance, confidence, disocclusionUsed, backgroundEntryUsed, rejectReason);
+ 
+     if (SSRDisplayMode == 23)
+         return float4(TraceRejectReasonColor(rejectReason, traceAccepted), 1.0);
+@@ -1032,6 +1074,9 @@
+     if (!traceAccepted)
+         return 0.0;
+ 
++    if (SSRDisplayMode == 24)
++        return float4(backgroundEntryUsed.xxx, confidence);
++
+     if (SSRDisplayMode == 22)
+         return float4(disocclusionUsed.xxx, confidence);
+ 
+@@ -1067,6 +1112,9 @@
+     if (SSRDisplayMode == 23)
+         return float4(saturate(rawSSR.rgb), 1.0);
+ 
++    if (SSRDisplayMode == 24)
++        return float4(saturate(rawSSR.r).xxx, 1.0);
++
+     if (SSRDisplayMode == 3)
+     {
+         float m = pbr ? 0.0 : reflectivity;
+@@ -1239,10 +1287,10 @@
+     return color;
+ }
+ 
+-technique SL_SSR_v0_19_TraceBudget
++technique SL_SSR_v0_20_BackgroundEntry
+ <
+-    ui_label = "SL SSR v0.19 - Trace Budget";
+-    ui_tooltip = "v0.19 fixes the ray-march budget so the configured Maximum Ray Distance can actually be reached. The previous hard 32-step cap stopped a default 0.12/1.18 ray around 20.3 units even when Maximum Ray Distance was 32.";
++    ui_label = "SL SSR v0.20 - Background Entry";
++    ui_tooltip = "v0.20 targets upside-down silhouette-shaped BLUE holes by preserving background as the negative side of a screen-space crossing and recovering the first geometry entry when it is already in front of the reflected ray.";
+ >
+ {
+     pass Trace
