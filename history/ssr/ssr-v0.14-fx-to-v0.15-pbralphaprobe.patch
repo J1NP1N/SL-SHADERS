@@ -1,0 +1,93 @@
+--- /mnt/data/v014/SL_SSR_v0_14_LegacyDielectricFallback/SL_SSR_v0_1_LegacyFirst.fx	2026-08-19 02:48:44.000000000 +0000
++++ /mnt/data/v015work/SL_SSR_v0_15_PBRAlphaProbe/SL_SSR_v0_1_LegacyFirst.fx	2026-08-19 03:11:27.197249919 +0000
+@@ -1,7 +1,7 @@
+-// SL_SSR_v0_14_LegacyDielectricFallback.fx
++// SL_SSR_v0_15_PBRAlphaProbe.fx
+ // Firestorm-native-data screen-space reflections for ReShade.
+ //
+-// v0.14 lineage / current goals:
++// v0.15 lineage / current goals:
+ //   - legacy SL materials first
+ //   - exact Firestorm SL_DEPTH + SL_NORMALS
+ //   - exact Firestorm projection/inverse projection from SLProbeLighting
+@@ -16,6 +16,7 @@
+ //   - raw hit-color and final-weight diagnostics added
+ //   - PBR parsed only when GBUFFER_FLAG_HAS_PBR is present
+ //   - exact SL_ALPHA_MASK receiver protection
++//   - native PBR alpha-blend path probe published as SL_PBR_ALPHA_MASK
+ //   - half-resolution ray tracing for practical cost
+ //
+ // Firestorm source contracts used here:
+@@ -57,6 +58,7 @@
+ uniform float SLSceneLinearValid = 0.0;
+ uniform float SLGBufferSpecularValid = 0.0;
+ uniform float SLGBufferSpecularSourceMode = 0.0;
++uniform float SLPBRAlphaMaskValid = 0.0;
+ 
+ // Captured Firestorm tonemap state. When unavailable, the shader falls back to
+ // the same local scene-linear -> presentation scalar mapping used by HybridGI.
+@@ -226,7 +228,8 @@
+         "Raw specular B\0"
+         "Raw specular A\0"
+         "Raw specular RGB x32\0"
+-        "Legacy no-spec fallback mask\0";
++        "Legacy no-spec fallback mask\0"
++        "PBR alpha-blend path probe mask\0";
+ > = 0;
+ 
+ uniform float SSRDebugGain
+@@ -245,6 +248,7 @@
+ texture SLAlphaMaskTex     : SL_ALPHA_MASK;
+ texture SLSceneLinearTex   : SL_SCENE_LINEAR;
+ texture SLGBufferSpecularTex : SL_GBUFFER_SPECULAR;
++texture SLPBRAlphaMaskTex : SL_PBR_ALPHA_MASK;
+ 
+ sampler SLNativeNormalsSampler
+ {
+@@ -296,6 +300,16 @@
+     MipFilter = POINT;
+ };
+ 
++sampler SLPBRAlphaMaskSampler
++{
++    Texture = SLPBRAlphaMaskTex;
++    AddressU = CLAMP;
++    AddressV = CLAMP;
++    MinFilter = POINT;
++    MagFilter = POINT;
++    MipFilter = POINT;
++};
++
+ texture SLSSRRawTex
+ {
+     Width = BUFFER_WIDTH / 2;
+@@ -1032,6 +1046,15 @@
+         return float4(m.xxx, 1.0);
+     }
+ 
++    if (SSRDisplayMode == 20)
++    {
++        float m =
++            SLPBRAlphaMaskValid > 0.5
++                ? tex2D(SLPBRAlphaMaskSampler, uv).r
++                : 0.0;
++        return float4(saturate(m).xxx, 1.0);
++    }
++
+     if (!SSRReady())
+         return color;
+ 
+@@ -1080,10 +1103,10 @@
+     return color;
+ }
+ 
+-technique SL_SSR_v0_14_LegacyDielectricFallback
++technique SL_SSR_v0_15_PBRAlphaProbe
+ <
+-    ui_label = "SL SSR v0.14 - Legacy Dielectric Fallback";
+-    ui_tooltip = "Keeps explicit legacy specular/classic-shiny authoritative, but gives legacy surfaces with neither signal a small Fresnel-driven neutral dielectric SSR fallback. PBR is unchanged.";
++    ui_label = "SL SSR v0.15 - PBR Alpha Probe";
++    ui_tooltip = "Preserves v0.14 material response and adds a native diagnostic mask for Firestorm PBR alpha-blended forward draws. This revision locates the glass render path; it does not add glass SSR yet.";
+ >
+ {
+     pass Trace
