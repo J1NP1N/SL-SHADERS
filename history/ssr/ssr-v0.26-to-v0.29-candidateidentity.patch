@@ -1,0 +1,129 @@
+--- v0.26/SL_SSR_v0_1_LegacyFirst.fx
++++ v0.29/SL_SSR_v0_1_LegacyFirst.fx
+@@ -1,7 +1,7 @@
+-// SL_SSR_v0_26_OriginBiasAudit.fx
++// SL_SSR_v0_29_CandidateIdentity.fx
+ // Firestorm-native-data screen-space reflections for ReShade.
+ //
+-// v0.26 lineage / current goals:
++// v0.29 lineage / current goals:
+ //   - legacy SL materials first
+ //   - exact Firestorm SL_DEPTH + SL_NORMALS
+ //   - exact Firestorm projection/inverse projection from SLProbeLighting
+@@ -23,6 +23,7 @@
+ //   - classify BLUE/no-hit rays by the depth samples they actually observed
+ //   - classify mixed-sign no-hit rays by actual crossing-candidate path
+ //   - decouple ray-origin self-intersection bias from Hit Thickness
++//   - identify the first oversized candidate that is skipped on rays which later terminate no-hit
+ //   - recover terminal oversized candidates that converge onto a tight foreground silhouette edge
+ //   - diagnose which silhouette-edge acceptance gate rejects remaining target candidates
+ //   - deepen binary refinement so valid silhouette crossings are not misclassified oversized
+@@ -328,7 +329,10 @@
+         "No-hit closest depth delta\0"
+         "No-hit crossing candidate path\0"
+         "Silhouette-edge recovered hit mask\0"
+-        "Silhouette-edge gate reason\0";
++        "Silhouette-edge gate reason\0"
++        "First oversized candidate color\0"
++        "Oversized candidate count\0"
++        "Skip-then-no-hit mask\0";
+ > = 0;
+ 
+ uniform float SSRDebugGain
+@@ -746,7 +750,11 @@
+     out float minAbsDepthDelta,
+     out float crossingPathClass,
+     out float silhouetteEdgeUsed,
+-    out float silhouetteGateClass)
++    out float silhouetteGateClass,
++    out float2 firstOversizedUV,
++    out float firstOversizedSeen,
++    out float oversizedCandidateCount,
++    out float skippedCandidateCount)
+ {
+     hitUV = 0.0;
+     hitDistance = 0.0;
+@@ -758,6 +766,10 @@
+     crossingPathClass = 0.0;
+     silhouetteEdgeUsed = 0.0;
+     silhouetteGateClass = 0.0;
++    firstOversizedUV = 0.0;
++    firstOversizedSeen = 0.0;
++    oversizedCandidateCount = 0.0;
++    skippedCandidateCount = 0.0;
+     // v0.18 diagnostic codes on a failed trace:
+@@ -907,9 +919,19 @@
+             }
+ 
+             if (finalDepthValid && finalDelta > SSRThickness)
++            {
+                 sawOversizedCandidate = true;
++                oversizedCandidateCount += 1.0;
++                if (firstOversizedSeen < 0.5)
++                {
++                    firstOversizedSeen = 1.0;
++                    firstOversizedUV = finalUV;
++                }
++            }
+             else
++            {
+                 sawOtherRefineFailure = true;
++            }
+@@ -919,6 +941,7 @@
+             if (disocclusionSkipsUsed < SSRDisocclusionSkips)
+             {
+                 disocclusionSkipsUsed++;
++                skippedCandidateCount += 1.0;
+                 disocclusionUsed = 1.0;
+@@ -1275,7 +1298,7 @@
+ {
+@@
+-    const bool geometryDebug = (SSRDisplayMode == 2 || SSRDisplayMode == 11 || SSRDisplayMode == 22 || SSRDisplayMode == 23 || SSRDisplayMode == 24 || SSRDisplayMode == 25 || SSRDisplayMode == 26 || SSRDisplayMode == 27 || SSRDisplayMode == 28 || SSRDisplayMode == 29);
++    const bool geometryDebug = (SSRDisplayMode == 2 || SSRDisplayMode == 11 || SSRDisplayMode == 22 || SSRDisplayMode == 23 || SSRDisplayMode == 24 || SSRDisplayMode == 25 || SSRDisplayMode == 26 || SSRDisplayMode == 27 || SSRDisplayMode == 28 || SSRDisplayMode == 29 || SSRDisplayMode == 30 || SSRDisplayMode == 31 || SSRDisplayMode == 32);
+@@ -1315,8 +1338,12 @@
+     float crossingPathClass;
+     float silhouetteEdgeUsed;
+     float silhouetteGateClass;
++    float2 firstOversizedUV;
++    float firstOversizedSeen;
++    float oversizedCandidateCount;
++    float skippedCandidateCount;
+ 
+-    bool traceAccepted = TraceSSR(viewPos, normal, rayDir, hitUV, hitDistance, confidence, disocclusionUsed, backgroundEntryUsed, rejectReason, noHitHistoryClass, minAbsDepthDelta, crossingPathClass, silhouetteEdgeUsed, silhouetteGateClass);
++    bool traceAccepted = TraceSSR(viewPos, normal, rayDir, hitUV, hitDistance, confidence, disocclusionUsed, backgroundEntryUsed, rejectReason, noHitHistoryClass, minAbsDepthDelta, crossingPathClass, silhouetteEdgeUsed, silhouetteGateClass, firstOversizedUV, firstOversizedSeen, oversizedCandidateCount, skippedCandidateCount);
+@@ -1348,6 +1375,30 @@
+     if (SSRDisplayMode == 29)
+         return float4(SilhouetteGateColor(silhouetteGateClass, traceAccepted, silhouetteEdgeUsed, rejectReason), 1.0);
++
++    if (SSRDisplayMode == 30)
++    {
++        if (traceAccepted || firstOversizedSeen < 0.5)
++            return 0.0;
++        return float4(DebugHDR(max(GetSceneLinear(firstOversizedUV).rgb, 0.0)), 1.0);
++    }
++
++    if (SSRDisplayMode == 31)
++    {
++        if (traceAccepted || firstOversizedSeen < 0.5)
++            return 0.0;
++        float c = saturate(oversizedCandidateCount / 4.0);
++        return float4(c.xxx, 1.0);
++    }
++
++    if (SSRDisplayMode == 32)
++    {
++        float m = (!traceAccepted && skippedCandidateCount > 0.5) ? 1.0 : 0.0;
++        return float4(m.xxx, 1.0);
++    }
+@@ -1392,7 +1443,7 @@
+-    if (SSRDisplayMode == 25 || SSRDisplayMode == 26 || SSRDisplayMode == 27 || SSRDisplayMode == 28 || SSRDisplayMode == 29)
++    if (SSRDisplayMode == 25 || SSRDisplayMode == 26 || SSRDisplayMode == 27 || SSRDisplayMode == 28 || SSRDisplayMode == 29 || SSRDisplayMode == 30 || SSRDisplayMode == 31 || SSRDisplayMode == 32)
+@@ -1567,10 +1618,10 @@
+-technique SL_SSR_v0_26_OriginBiasAudit
++technique SL_SSR_v0_29_CandidateIdentity
+ <
+-    ui_label = "SL SSR v0.26 - Origin Bias Audit";
+-    ui_tooltip = "v0.26 preserves the v0.25 diagnostics but decouples ray-origin self-intersection bias from Hit Thickness. Use 0.010 as the corrected baseline and 0.135 to reproduce the old effective bias at Hit Thickness 0.18.";
++    ui_label = "SL SSR v0.29 - Candidate Identity";
++    ui_tooltip = "v0.29 preserves v0.26 geometry and isolates the first oversized candidate on rays that are skipped and later terminate no-hit. This tests whether the so-called disocclusion candidate is actually the reflected avatar itself.";
+ >
