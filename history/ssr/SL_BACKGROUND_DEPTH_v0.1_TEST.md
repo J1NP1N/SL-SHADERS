@@ -51,4 +51,4 @@ If this passes, the next tracer revision keeps primary depth as layer 0 and cons
 - OpenGL ReShade view publication is pinned to the current ReShade OpenGL handle encoding
 
 Package: `SL_SSR_BackgroundDepth_v0_1_SourceBridge.zip`
-SHA-256: `f31353095108d1ff4e460dfe9108528e2775552c14a288032b8f65b723e2495e`
+SHA-256: `707685a42546a5a71c4d8632ff4afd8dcaedee90365929a446e37c112b3196b7`
