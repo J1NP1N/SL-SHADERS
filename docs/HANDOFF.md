@@ -6,13 +6,13 @@ This is the live project checkpoint.
 
 ## Current focus
 
-Opaque SSR plumbing/material response are proven. v0.16 fixed the dark additive-composite shadow bleed. The persistent camera-dependent avatar-adjacent black strip is still present in the geometry/ray-hit path.
+Opaque SSR plumbing/material response are proven. v0.16 fixed the dark additive-composite shadow bleed. The remaining camera-dependent missing reflection is upstream in `TraceSSR`.
 
-Current leading hypothesis is now **background-to-geometry entry miss in TraceSSR**, more specific than generic sampling/tunneling. The missing BLUE region has the upside-down silhouette of the avatar reflection.
+The target BLUE/no-crossing region follows the **upside-down silhouette of the avatar reflection**. Source inspection identified a specific blind spot: a background sample clears `previousValid`, so if the next sample lands directly on geometry with `delta >= 0`, the normal `previousDelta < 0 && delta >= 0` crossing cannot fire.
 
 Installed native bridge may remain **SLProbeLighting v1.6.11 / v0.15 PBRAlphaProbe**.
 
-Current FX baseline under investigation: **SSR v0.19 TraceBudget**.
+Current FX test: **SSR v0.20 BackgroundEntry — PENDING RUNTIME**.
 
 ## Runtime status
 
@@ -22,11 +22,12 @@ Current FX baseline under investigation: **SSR v0.19 TraceBudget**.
 - material class / bridge: legacy-cyan classification and healthy bridge confirmed.
 - v0.13 LegacyRGBResponse: PASS — legacy `specularRect.rgb` drives SSR even when alpha/glossiness is zero.
 - v0.14 LegacyDielectricFallback: CONCEPT PASS — diffuse-only legacy surfaces can receive conservative SSR without authored spec maps; strength remains tunable.
-- v0.15 PBRAlphaProbe: INCONCLUSIVE / selector miss — supplied PBR alpha-blend path probe mask was fully black. Known glass fixture did not light up. Glass work is parked, not abandoned.
+- v0.15 PBRAlphaProbe: INCONCLUSIVE / selector miss — known PBR alpha-blend glass fixture did not light up. Glass work remains parked.
 - v0.16 EnergyComposite: PARTIAL PASS — dark cast-shadow ghost was removed/reduced by receiver base replacement.
-- v0.17 DisocclusionSkip: FAIL / informative — skip-ahead did not recover the black region. White in the ray diagnostic is good/accepted reflection; black is the defect. Raising `Hit Thickness` to `0.30` did not fill it.
-- v0.18 RayRejectReasons: PASS as diagnostic — target strip is BLUE, meaning no depth crossing was accepted before the march terminated.
-- v0.19 TraceBudget: FAIL for target artifact, informative — target strip remains BLUE even with a much larger runtime search budget.
+- v0.17 DisocclusionSkip: FAIL for the BLUE target / informative — ORANGE now cleanly identifies the separate oversized/disocclusion crossing class.
+- v0.18 RayRejectReasons: PASS as diagnostic — the target missing reflection is BLUE, meaning no accepted depth crossing.
+- v0.19 TraceBudget: FAIL for target artifact, informative — BLUE persists even with Trace Steps 48 and Maximum Ray Distance 128, so total search range is not the cause.
+- v0.20 BackgroundEntry: PENDING — directly tests background-to-geometry silhouette entry recovery.
 
 ## Proven facts
 
@@ -36,57 +37,53 @@ Current FX baseline under investigation: **SSR v0.19 TraceBudget**.
 - Legacy/PBR classification via normal-buffer flag works.
 - Legacy explicit specular RGB response produces visible SSR.
 - Diffuse-only legacy surfaces can receive a small dielectric fallback.
-- v0.16 demonstrated that the old dark artifact was partly an additive-composite problem.
-- The remaining black region appears before material weighting/composite because it is present in the ray-hit path.
-- Global `Hit Thickness` is not the controlling fix.
-- v0.18 classifies the bad strip as BLUE/no accepted crossing.
-- v0.19 proves the old 32-step hard ceiling was a real bug, but **not the full cause of this strip**.
-- Follow-up images cleanly separate ORANGE disocclusion rejection from BLUE no-crossing failure.
-- The BLUE missing region follows the upside-down avatar-reflection silhouette.
+- v0.16 energy composite fixed the dark receiver/shadow bleed component.
+- The remaining target artifact is already present in ray-hit/termination diagnostics, before material weighting/composite.
+- Hit Thickness is not the controlling fix; testing up to 0.30 did not fill the region.
+- Total ray range is not the controlling fix; v0.19 remained BLUE with an enlarged runtime budget.
+- ORANGE disocclusion rejection and BLUE no-crossing are separate failure classes.
+- The BLUE target is shaped like the reflected avatar, upside down.
 
-## Current source-level diagnosis
+## v0.20 BackgroundEntry
 
-The current marcher detects a hit only on:
+FX-only isolated test. All material response, dielectric fallback, PBR response, v0.16 energy composite, and ORANGE disocclusion logic remain unchanged.
 
-`previousValid && previousDelta < 0.0 && delta >= 0.0`
+Core change:
 
-But a background depth sample does:
+- background samples are retained as a valid negative-side march bracket instead of clearing `previousValid`;
+- when the next non-background sample is already `delta >= 0`, binary refinement searches the background-to-geometry interval;
+- that first silhouette entry may be accepted through a dedicated background-entry path;
+- recovered hits receive a conservative confidence multiplier.
 
-`previousValid = false`
+New controls:
 
-This creates a specific blind spot:
+- `Background Entry Recovery` = 1 by default
+- `Background Entry Confidence` = 0.75 by default
 
-1. ray samples background;
-2. next sample lands directly on the avatar and already has `delta >= 0`;
-3. the crossing is not tested because `previousValid` is false;
-4. the positive avatar sample becomes the new previous sample;
-5. the ray may leave the thin avatar silhouette without ever producing the required negative-to-positive transition.
+New diagnostic:
 
-That exactly matches an upside-down avatar-shaped BLUE hole while surrounding reflection geometry still works.
+`Display Mode -> Background-entry recovered hit mask`
 
-This is more specific than generic exponential-step tunneling. Reducing step growth can mask the problem by increasing the chance of a negative geometry sample before the positive sample, but the structural problem is that **background -> first non-background positive sample cannot currently bracket a hit**.
+WHITE means the accepted SSR hit depended on the new background-entry path.
 
-## Next revision
+Primary success criterion:
 
-Build **SSR v0.20 BackgroundEntry** as an FX-only isolated test.
+1. the former upside-down avatar-shaped BLUE region becomes WHITE/accepted in `Ray termination reason`;
+2. `Background-entry recovered hit mask` lights up in that same reflected silhouette;
+3. normal composite fills the missing avatar reflection without widespread false silhouette hits.
 
-Goals:
+If the new mask lights up but the composite is too permissive, the hypothesis is proven and only acceptance/confidence needs refinement. If the mask stays black and BLUE is unchanged, the hypothesis is false for that region.
 
-- preserve all v0.19 material/composite behavior;
-- preserve ORANGE disocclusion handling as a separate path;
-- add a conservative background-entry candidate when the previous march state was background and the first non-background sample is `delta >= 0`;
-- bracket/refine that entry against the last background march interval rather than silently storing the positive sample;
-- add a diagnostic mask/color for hits recovered specifically through this background-entry path.
+Source delta commit: `26d6d431773b55e82528bc2b7f702820d223c980`.
 
-Primary success criterion: the upside-down avatar-shaped BLUE region turns WHITE/valid hit without widespread through-object false positives.
+Local package:
 
-Do not replace the entire marcher until this narrower hypothesis is tested.
-
-Runtime result commit with this refined diagnosis: `1c3737dbbf9aeed0240c4729593cc2fb6ca999ff`.
+- `SL_SSR_v0_20_BackgroundEntry.zip`
+- SHA-256 `367b58d85265b7979994374b49885ad59b5e10dd7d05fa07ff1f250ab2a032a8`
 
 ## Glass checkpoint
 
-Known glass fixture:
+Known fixture:
 
 - PBR, Alpha Mode Blend, base alpha 0.500
 - metallic factor 1.000, roughness factor 1.000
@@ -95,7 +92,7 @@ Known glass fixture:
 - ORM UUID `ae33719a-14d1-d228-2ad1-70adddebe890`
 - Normal UUID `4ed76883-9057-3be5-c18e-1b878bf9dd88`
 
-v0.15 first-segment PBR-alpha probe mask was black in the supplied runtime image. Resume glass work after the current ray-hole cause is settled.
+v0.15 first-segment PBR-alpha probe was black. Resume after the current ray-hole cause is settled.
 
 ## Important commits
 
@@ -107,13 +104,13 @@ v0.15 first-segment PBR-alpha probe mask was black in the supplied runtime image
 - v0.15 runtime record: `ce1f122f1be908a12a4e1fc735171da0682dc805`
 - v0.16 source: `4658fb3d6baeeedd7e56cb76c5a3d031b4372c24`
 - v0.16 runtime record: `399e0075e49b4e628056f06bc7ae70c31f41e003`
-- v0.17 source delta: `17abe9b17ca54ff8d01e4d5c50c28f531664e578`
-- v0.17 corrected runtime record: `e44ad9a083d30463e2589b975258c01aec9d7950`
-- v0.18 source delta: `af126b4908715a242caf7c28e2a1bbc99b7dc2e4`
-- v0.18 runtime record: `179a926ac5d6b788d680ce146b899f762d494576`
-- v0.19 source delta: `faeee069379d21e8bd824c0e3087b77be170898d`
-- v0.19 runtime record: `e64462d2d304cafe39e552eb06c5983c86da9c29`
+- v0.17 source: `17abe9b17ca54ff8d01e4d5c50c28f531664e578`
+- v0.18 source: `af126b4908715a242caf7c28e2a1bbc99b7dc2e4`
+- v0.18 runtime: `179a926ac5d6b788d680ce146b899f762d494576`
+- v0.19 source: `faeee069379d21e8bd824c0e3087b77be170898d`
+- v0.19 runtime: `e64462d2d304cafe39e552eb06c5983c86da9c29`
 - v0.19 refined diagnosis: `1c3737dbbf9aeed0240c4729593cc2fb6ca999ff`
+- v0.20 source: `26d6d431773b55e82528bc2b7f702820d223c980`
 
 Original recovered v0.10 source commit: `dd7022c80e0acf89295b11bda00ee788ae10d166`.
 
