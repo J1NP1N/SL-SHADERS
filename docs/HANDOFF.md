@@ -10,7 +10,9 @@ Opaque SSR plumbing/material response are proven. v0.16 fixed the dark additive-
 
 Installed native bridge may remain **SLProbeLighting v1.6.11 / v0.15 PBRAlphaProbe**.
 
-Current FX test: **SSR v0.25 SilhouetteGate — PENDING RUNTIME**.
+Current runtime result: **SSR v0.25 SilhouetteGate — COMPLETE / informative fail**.
+
+Next runtime comparison: **SSR v0.26 OriginBiasAudit**. Prepared fallback/prototype: **v0.28 ScreenDDAPrototype**. v0.27 FullResBaseline is optional if resolution needs isolation.
 
 ## Runtime status
 
@@ -28,8 +30,8 @@ Current FX test: **SSR v0.25 SilhouetteGate — PENDING RUNTIME**.
 - v0.21 NoHitHistory: PASS diagnostic — target is YELLOW/mixed-sign no-hit with skips=3.
 - v0.22 CrossingPath: PASS diagnostic — target is ORANGE: a real negative-to-positive candidate reaches refinement but remains oversized.
 - v0.23 DeepRefine: FAIL/informative — 5 -> 9 binary steps does not remove target; still ORANGE.
-- v0.24 SilhouetteEdge: FAIL/informative — recovery path fires on only sparse isolated pixels; target avatar-shaped region is not substantially recovered.
-- v0.25 SilhouetteGate: PENDING — diagnostic-only split of the exact silhouette-edge gate that rejects terminal oversized candidates.
+- v0.24 SilhouetteEdge: FAIL/informative — terminal recovery fires on only sparse isolated pixels.
+- v0.25 SilhouetteGate: PASS diagnostic / architecture fail — target is mostly ordinary BLUE in the gate-reason view, meaning most target rays never reach the terminal silhouette gate after normal disocclusion skips.
 
 ## Proven facts for the current artifact
 
@@ -39,62 +41,96 @@ Current FX test: **SSR v0.25 SilhouetteGate — PENDING RUNTIME**.
 - The ray samples real geometry on both sides of the depth relation.
 - The ray forms the correct `previousDelta < 0 && delta >= 0` crossing candidate.
 - More binary refinement does not make the refined positive sample fall within global `Hit Thickness`.
-- v0.24's terminal silhouette recovery is too selective for the target at its current gates.
+- v0.24 terminal silhouette recovery is structurally too late for most target rays.
 - ORANGE/disocclusion and the current silhouette target must not be conflated. Keep `Disocclusion Skips = 3` unless specifically testing disocclusion.
 
-## v0.24 runtime result
+## v0.25 result — important architectural correction
 
-`Silhouette-edge recovered hit mask` was almost entirely black in the target region, with only a few isolated white recovered pixels.
+Runtime settings:
 
-Settings retained:
-
-- `Silhouette Edge Recovery = 1`
-- `Silhouette Edge Confidence = 0.60`
-- `Silhouette Min Depth Jump = 0.25`
-- `Silhouette Max Pixel Span = 2.0`
 - `Disocclusion Skips = 3`
 - `Hit Thickness = 0.18`
+- v0.24 silhouette thresholds unchanged
+- display `Silhouette-edge gate reason`
 
-Do not loosen those thresholds blindly. The next diagnostic identifies which gate is failing.
+Observed:
 
-Runtime record commit: `ccc2f4e0b2f8bb7aa46f5f19b1f2baa2acf57d65`.
+The target upside-down avatar-reflection hole is dominated by ordinary BLUE/no-crossing, not by v0.25 terminal gate-failure colors.
 
-## v0.25 SilhouetteGate
+Interpretation:
 
-FX-only diagnostic revision. v0.24 behavior is preserved.
+1. v0.22 already proved target rays do form oversized crossing candidates.
+2. Those candidates can consume one or more of the three normal disocclusion skips.
+3. Many rays then terminate later as ordinary no-crossing before the skip budget is exhausted.
+4. Therefore the terminal-only v0.24 silhouette recovery never runs for most target pixels.
+5. This explains v0.24's sparse isolated recovery pixels.
 
-New display mode:
+Conclusion: silhouette-vs-disocclusion classification must occur **at each oversized candidate**, not only after all skips are spent.
 
-`Display Mode -> Silhouette-edge gate reason`
+Runtime record commit: `09d6e6c58561433212c8ba0a7b36d1b88913dbce`.
 
-Color key for terminal oversized candidates:
+## Trace-core audit
 
-- WHITE = recovered silhouette-edge hit
-- RED = refined positive side invalid / no longer oversized
-- CYAN = refined negative-side bracket invalid or not negative geometry
-- YELLOW = foreground depth jump below `Silhouette Min Depth Jump`
-- MAGENTA = refined bracket wider than `Silhouette Max Pixel Span`
-- ORANGE = both depth-jump and pixel-span gates fail
-- GREEN = all geometric gates pass but recovery is disabled or confidence dies
-- Other colors preserve existing rejection diagnostics
+A broader source audit is committed in `docs/SSR_TRACE_CORE_AUDIT_2026-08-19.md`.
 
-Runtime test:
+Key findings:
 
-1. Hot-install `SL_SSR_v0_25_SilhouetteGate.zip`; Firestorm may remain open.
-2. Verify technique `SL SSR v0.25 - Silhouette Gate`.
-3. KEEP `Disocclusion Skips = 3` and `Hit Thickness = 0.18`.
-4. Keep silhouette thresholds at their v0.24 defaults.
-5. Use the same camera angle.
-6. Return one screenshot of `Silhouette-edge gate reason`.
+### 1. Ray-origin bias was incorrectly coupled to Hit Thickness
 
-Do not tune thresholds before this diagnostic is read.
+Old code used:
 
-Source delta commit: `85c526b2b70a67cb102014a9577694ebb1e1d349`.
+```hlsl
+originPos + originNormal * max(SSRThickness * 0.75, 0.01)
+```
 
-Local package:
+At `Hit Thickness = 0.18`, that offsets the ray origin by `0.135` view-space units. Thickness tests therefore changed both hit tolerance and ray geometry.
 
-- `SL_SSR_v0_25_SilhouetteGate.zip`
-- SHA-256 `675eaf0a5865003cba03dea96d0de6f391aeff222cfe77a618a533d9426142a9`
+### 2. Strict sign-crossing binary refinement assumes local depth continuity
+
+At visible silhouettes the single-layer depth buffer is discontinuous. Binary search may converge spatially to the silhouette while `finalDelta` remains large indefinitely. v0.23 strongly supports this.
+
+### 3. Half-resolution receiver tracing is not a neutral diagnostic baseline
+
+Current SSR launches one receiver ray per half-resolution pixel and upsamples. Full-resolution comparison is prepared as v0.27 if required.
+
+### 4. Current custom marcher differs materially from Firestorm native SSR
+
+Firestorm native SSR uses adaptive depth-error stepping and an absolute depth-distance acceptance path, not only our strict negative-to-positive/fixed-thickness rule.
+
+### 5. Screen-space DDA is the preferred architectural prototype
+
+A contiguous pixel traversal with perspective-correct ray depth intervals is prepared in v0.28 to test whether the current artifact is fundamentally tied to the old trace core.
+
+Audit commit: `69997fb69917c4b2808f97a6a5a7051bcd1626ac`.
+
+## Next tests
+
+### v0.26 OriginBiasAudit
+
+FX-only. Decouples `Ray Origin Bias` from `Hit Thickness`.
+
+- corrected default `Ray Origin Bias = 0.010`
+- `0.135` reproduces the old effective bias at `Hit Thickness = 0.18`
+- keep `Disocclusion Skips = 3`
+- keep `Hit Thickness = 0.18`
+
+Compare the same bad camera angle at bias `0.010` and `0.135` using final composite and/or ray termination/hit diagnostics.
+
+Source delta commit: `1de46b30f98143e1a4cf6d46765a61e7289f78ca`.
+
+### v0.27 FullResBaseline
+
+Prepared diagnostic only. Same trace family, but one receiver ray per full-resolution pixel. Use only if v0.26/v0.28 leave a resolution ambiguity.
+
+Source delta commit: `d0945f9a894ff04259e6a1240f60698a7ff4ce0c`.
+
+### v0.28 ScreenDDAPrototype
+
+Prepared experimental trace-core replacement. Uses contiguous screen-pixel traversal / perspective-correct depth-slab testing rather than extending the old binary-discontinuity workaround. Compare DDA ON/OFF without changing material response/composite.
+
+Source delta commit: `b59bc237430a81c885ac719830785b2231d25336`.
+
+Prepared-test checkpoint commit: `9a2c86f92b41618e95405703efece993893f0de0`.
 
 ## Glass checkpoint
 
@@ -108,19 +144,6 @@ Known fixture:
 - Normal UUID `4ed76883-9057-3be5-c18e-1b878bf9dd88`
 
 v0.15 first-segment PBR-alpha probe was black. Resume after the current ray-hole cause is settled.
-
-## Important recent commits
-
-- v0.21 runtime: `72e0a0564298a6813cc2eb399784abddf64fe76c`
-- v0.22 source: `0efe13739c7e7d0445822bf0b91705a1b6cf5a39`
-- v0.22 runtime: `0a84a797b3d2cfada7c80277842fdb8adcb2e643`
-- v0.23 source: `4205510bbfcdf3ea11b059c5b72ad971cc22af64`
-- v0.23 runtime: `25c4f45ba5d3ccd222287aff7dc919a9bdf3ffd7`
-- v0.24 source: `cac5b0c0bb5e14b53ddfe3671313288ad9df0752`
-- v0.24 runtime: `ccc2f4e0b2f8bb7aa46f5f19b1f2baa2acf57d65`
-- v0.25 source: `85c526b2b70a67cb102014a9577694ebb1e1d349`
-
-Original recovered v0.10 source commit: `dd7022c80e0acf89295b11bda00ee788ae10d166`.
 
 ## Runtime-development rules
 
