@@ -1,0 +1,158 @@
+--- v0.29/SL_SSR_v0_1_LegacyFirst.fx
++++ v0.30/SL_SSR_v0_1_LegacyFirst.fx
+@@ -1,7 +1,7 @@
+-// SL_SSR_v0_29_CandidateIdentity.fx
++// SL_SSR_v0_30_DeferredCandidate.fx
+ // Firestorm-native-data screen-space reflections for ReShade.
+ //
+-// v0.29 lineage / current goals:
++// v0.30 lineage / current goals:
+ //   - legacy SL materials first
+ //   - exact Firestorm SL_DEPTH + SL_NORMALS
+ //   - exact Firestorm projection/inverse projection from SLProbeLighting
+@@ -24,6 +24,7 @@
+ //   - classify mixed-sign no-hit rays by actual crossing-candidate path
+ //   - decouple ray-origin self-intersection bias from Hit Thickness
+ //   - identify the first oversized candidate that is skipped on rays which later terminate no-hit
++//   - defer the first actually-skipped oversized candidate and use it only if the ray later ends no-hit
+ //   - recover terminal oversized candidates that converge onto a tight foreground silhouette edge
+ //   - diagnose which silhouette-edge acceptance gate rejects remaining target candidates
+ //   - deepen binary refinement so valid silhouette crossings are not misclassified oversized
+@@ -186,6 +187,22 @@
+     ui_min = 0.5; ui_max = 4.0; ui_step = 0.25;
+ > = 2.0;
+ 
++uniform int SSRDeferredCandidateFallback
++<
++    ui_label = "Deferred Candidate Fallback";
++    ui_tooltip = "Preserve the first actually-skipped oversized candidate while normal Disocclusion Skips continue. If the ray later ends as ordinary no-hit, use that saved candidate instead of returning no reflection. Later valid hits still win.";
++    ui_type = "slider";
++    ui_min = 0; ui_max = 1;
++> = 1;
++
++uniform float SSRDeferredCandidateConfidence
++<
++    ui_label = "Deferred Candidate Confidence";
++    ui_tooltip = "Confidence multiplier for a saved skipped candidate used only after the normal trace fails to find any later hit.";
++    ui_type = "drag";
++    ui_min = 0.10; ui_max = 1.00; ui_step = 0.05;
++> = 0.55;
++
+ uniform int SSRDisocclusionSkips
+ <
+     ui_label = "Disocclusion Skips";
+@@ -332,7 +349,8 @@
+         "Silhouette-edge gate reason\0"
+         "First oversized candidate color\0"
+         "Oversized candidate count\0"
+-        "Skip-then-no-hit mask\0";
++        "Skip-then-no-hit mask\0"
++        "Deferred-candidate fallback mask\0";
+ > = 0;
+ 
+ uniform float SSRDebugGain
+@@ -754,7 +772,8 @@
+     out float2 firstOversizedUV,
+     out float firstOversizedSeen,
+     out float oversizedCandidateCount,
+-    out float skippedCandidateCount)
++    out float skippedCandidateCount,
++    out float deferredCandidateUsed)
+ {
+     hitUV = 0.0;
+     hitDistance = 0.0;
+@@ -770,6 +789,7 @@
+     firstOversizedSeen = 0.0;
+     oversizedCandidateCount = 0.0;
+     skippedCandidateCount = 0.0;
++    deferredCandidateUsed = 0.0;
+@@ -800,6 +820,9 @@
+     bool sawOversizedCandidate = false;
+     bool sawOtherRefineFailure = false;
+     int disocclusionSkipsUsed = 0;
++    float2 firstSkippedUV = 0.0;
++    float firstSkippedDistance = 0.0;
++    bool firstSkippedSeen = false;
+ 
+     float t = max(SSRInitialStep, 0.01);
+@@ -940,6 +963,17 @@
+             if (disocclusionSkipsUsed < SSRDisocclusionSkips)
+             {
++                // v0.30: defer the first candidate that we ACTUALLY skip. We still
++                // continue tracing exactly as before; any later valid hit wins.
++                // Only if the ray ultimately ends ordinary no-hit may this saved
++                // candidate be used as a conservative fallback.
++                if (!firstSkippedSeen && finalDepthValid && finalDelta > SSRThickness)
++                {
++                    firstSkippedSeen = true;
++                    firstSkippedUV = finalUV;
++                    firstSkippedDistance = hi;
++                }
++
+                 disocclusionSkipsUsed++;
+                 skippedCandidateCount += 1.0;
+@@ -1041,6 +1075,37 @@
+         t *= SSRStepGrowth;
+     }
+ 
++    // v0.30: preserve the working disocclusion search, but do not throw away
++    // the only candidate forever. If a skipped oversized candidate was seen and
++    // the ray later ends as ordinary BLUE/no-crossing, use that saved candidate
++    // as a deferred fallback. This is intentionally NOT used for off-screen,
++    // direction, zero-confidence, or terminal-oversized failures.
++    if (SSRDeferredCandidateFallback > 0 &&
++        rejectReason > 2.5 && rejectReason < 3.5 &&
++        firstSkippedSeen)
++    {
++        hitUV = firstSkippedUV;
++        hitDistance = firstSkippedDistance;
++        confidence =
++            EdgeConfidence(firstSkippedUV) *
++            DistanceConfidence(firstSkippedDistance) *
++            saturate(SSRDeferredCandidateConfidence);
++
++        deferredCandidateUsed = 1.0;
++        disocclusionUsed = 1.0;
++
++        if (confidence > 0.0)
++        {
++            rejectReason = 0.0;
++            crossingPathClass = 1.0;
++            return true;
++        }
++
++        rejectReason = 5.0;
++        crossingPathClass = 5.0;
++        return false;
++    }
++
+@@ -1298,7 +1363,7 @@
+-    const bool geometryDebug = (SSRDisplayMode == 2 || SSRDisplayMode == 11 || SSRDisplayMode == 22 || SSRDisplayMode == 23 || SSRDisplayMode == 24 || SSRDisplayMode == 25 || SSRDisplayMode == 26 || SSRDisplayMode == 27 || SSRDisplayMode == 28 || SSRDisplayMode == 29 || SSRDisplayMode == 30 || SSRDisplayMode == 31 || SSRDisplayMode == 32);
++    const bool geometryDebug = (SSRDisplayMode == 2 || SSRDisplayMode == 11 || SSRDisplayMode == 22 || SSRDisplayMode == 23 || SSRDisplayMode == 24 || SSRDisplayMode == 25 || SSRDisplayMode == 26 || SSRDisplayMode == 27 || SSRDisplayMode == 28 || SSRDisplayMode == 29 || SSRDisplayMode == 30 || SSRDisplayMode == 31 || SSRDisplayMode == 32 || SSRDisplayMode == 33);
+@@ -1342,8 +1407,9 @@
+     float firstOversizedSeen;
+     float oversizedCandidateCount;
+     float skippedCandidateCount;
++    float deferredCandidateUsed;
+ 
+-    bool traceAccepted = TraceSSR(viewPos, normal, rayDir, hitUV, hitDistance, confidence, disocclusionUsed, backgroundEntryUsed, rejectReason, noHitHistoryClass, minAbsDepthDelta, crossingPathClass, silhouetteEdgeUsed, silhouetteGateClass, firstOversizedUV, firstOversizedSeen, oversizedCandidateCount, skippedCandidateCount);
++    bool traceAccepted = TraceSSR(viewPos, normal, rayDir, hitUV, hitDistance, confidence, disocclusionUsed, backgroundEntryUsed, rejectReason, noHitHistoryClass, minAbsDepthDelta, crossingPathClass, silhouetteEdgeUsed, silhouetteGateClass, firstOversizedUV, firstOversizedSeen, oversizedCandidateCount, skippedCandidateCount, deferredCandidateUsed);
+@@ -1399,6 +1465,9 @@
+         return float4(m.xxx, 1.0);
+     }
+ 
++    if (SSRDisplayMode == 33)
++        return float4(deferredCandidateUsed.xxx, traceAccepted ? confidence : 1.0);
++
+@@ -1443,7 +1512,7 @@
+-    if (SSRDisplayMode == 25 || SSRDisplayMode == 26 || SSRDisplayMode == 27 || SSRDisplayMode == 28 || SSRDisplayMode == 29 || SSRDisplayMode == 30 || SSRDisplayMode == 31 || SSRDisplayMode == 32)
++    if (SSRDisplayMode == 25 || SSRDisplayMode == 26 || SSRDisplayMode == 27 || SSRDisplayMode == 28 || SSRDisplayMode == 29 || SSRDisplayMode == 30 || SSRDisplayMode == 31 || SSRDisplayMode == 32 || SSRDisplayMode == 33)
+@@ -1618,10 +1687,10 @@
+-technique SL_SSR_v0_29_CandidateIdentity
++technique SL_SSR_v0_30_DeferredCandidate
+ <
+-    ui_label = "SL SSR v0.29 - Candidate Identity";
+-    ui_tooltip = "v0.29 preserves v0.26 geometry and isolates the first oversized candidate on rays that are skipped and later terminate no-hit. This tests whether the so-called disocclusion candidate is actually the reflected avatar itself.";
++    ui_label = "SL SSR v0.30 - Deferred Candidate";
++    ui_tooltip = "v0.30 preserves normal Disocclusion Skips, but saves the first actually-skipped oversized candidate. If the ray later ends ordinary no-hit, that candidate may be used as a reduced-confidence fallback. Any later valid hit still wins.";
+ >
