@@ -1,0 +1,174 @@
+--- SL_HiZ_Trace_v0_1_Compare.fx
++++ SL_HiZ_Trace_v0_2_FineValidate.fx
+@@ -1,15 +1,16 @@
+-// SL_HiZ_Trace_v0_1_Compare.fx
+-// Hierarchical screen-space reflection TRACE COMPARISON.
++// SL_HiZ_Trace_v0_2_FineValidate.fx
++// Hierarchical screen-space reflection FINE-HIT VALIDATION COMPARISON.
+ //
+ // This effect does not replace/composite SSR yet. It consumes the validated
+-// SL Hi-Z v0.1a min/max depth hierarchy, traces a perspective-correct screen
++// SL Hi-Z v0.1b min/max depth hierarchy, traces a perspective-correct screen
+ // ray through hierarchical tiles, and compares its raw hit mask with v0.35.
+ //
+ // Traversal design:
+ //   * coarse min/max tiles conservatively reject screen-space segments whose
+ //     ray-depth slab cannot overlap any geometry in the tile;
+ //   * possible overlaps descend to finer tiles without advancing the ray;
+-//   * mip 0 performs a one-pixel finite depth-slab intersection;
++//   * mip 0 requires a real front-to-back depth crossing, refines it by bisection,
++//     and validates the hit surface normal against the incoming reflection ray;
+ //   * non-overlapping fine cells advance and climb back to coarse levels.
+ // This keeps v0.35, its legacy resolve, and Temporal v0.1 untouched.
+ 
+@@ -87,6 +88,21 @@
+     ui_type = "drag"; ui_min = 0.25; ui_max = 4.0; ui_step = 0.05;
+ > = 1.0;
+ 
++
++uniform float HiZTraceCrossingGuard
++<
++    ui_label = "Fine Crossing Guard";
++    ui_tooltip = "Minimum view-depth separation required on both sides of a mip-0 front-to-back crossing. Removes thickness-only near misses.";
++    ui_type = "drag"; ui_min = 0.0; ui_max = 0.05; ui_step = 0.001;
++> = 0.002;
++
++uniform float HiZTraceHitFacingMin
++<
++    ui_label = "Hit Surface Facing";
++    ui_tooltip = "Minimum -dot(rayDir, hitNormal). Rejects grazing/back-facing screen-depth candidates that do not present a physical front face to the reflected ray.";
++    ui_type = "drag"; ui_min = 0.0; ui_max = 0.75; ui_step = 0.01;
++> = 0.05;
++
+ uniform int HiZTraceDisplayMode
+ <
+     ui_label = "Hi-Z Trace Display";
+@@ -264,11 +280,12 @@
+     if(rayDir.z>=-0.001){rejectReason=1.0;return false;}
+     ScreenRay r;if(!BuildScreenRay(originPos,originNormal,rayDir,r)){rejectReason=2.0;return false;}
+     float lambda=0.0;int mip=clamp(HiZTraceStartMip,1,9);float mipSum=0.0;float lineLen=max(length(r.dp),1e-5);float epsLambda=max(HiZTraceTileEpsilonPx,0.001)/lineLen;
++    float lastFineReject=0.0;
+     [loop]
+     for(int i=0;i<SL_HIZ_TRACE_MAX_ITERS;++i)
+     {
+         if(i>=HiZTraceMaxIterations)break;iterations+=1.0;mipSum+=(float)mip;
+-        if(lambda>=1.0){rejectReason=3.0;break;}
++        if(lambda>=1.0){rejectReason=lastFineReject>0.0?lastFineReject:3.0;break;}
+         float2 uv=ScreenRayUV(r,lambda);if(!InsideScreen(uv)||!InsideFirestormWorld(uv)){rejectReason=2.0;break;}
+         float exitLambda=TileExitLambda(r,lambda,mip);exitLambda=max(exitLambda,lambda+epsLambda);exitLambda=min(exitLambda,1.0);
+         float2 uvMid=ScreenRayUV(r,(lambda+exitLambda)*0.5);float2 scene=SampleHiZInterval(uvMid,mip);bool occupied=scene.y>0.0&&scene.x<=scene.y;
+@@ -277,27 +294,58 @@
+         if(overlap&&mip>0){mip-=1;continue;}
+         if(overlap&&mip==0)
+         {
+-            float sd=scene.x;float a0=d0-sd,a1=d1-sd;float hitLambda=lambda;
+-            if(a0*a1<=0.0&&abs(a1-a0)>1e-8)hitLambda=lerp(lambda,exitLambda,saturate(-a0/(a1-a0)));
+-            else hitLambda=abs(a0)<=abs(a1)?lambda:exitLambda;
+-            float hd=abs(ScreenRayDepth(r,hitLambda)-sd);
+-            if(hd<=thickness)
++            float sd=scene.x;float a0=d0-sd,a1=d1-sd;float guard=max(HiZTraceCrossingGuard,0.0);
++            // v0.1 accepted thickness-only near misses by selecting whichever
++            // endpoint was closest to the depth sample. v0.2 requires an actual
++            // monotonic front->back crossing through the visible depth sample.
++            bool strictCrossing=(a0<=-guard)&&(a1>=guard)&&(d1>d0+1e-7);
++            if(strictCrossing)
+             {
+-                hitUV=ScreenRayUV(r,hitLambda);hitDistance=ScreenRayDistance(r,hitLambda);confidence=EdgeConfidence(hitUV)*DistanceConfidence(hitDistance);averageMip=mipSum/max(iterations,1.0);
+-                if(confidence>1e-5){rejectReason=0.0;return true;}rejectReason=5.0;return false;
++                float lo=lambda,hi=exitLambda;
++                [unroll]
++                for(int b=0;b<5;++b)
++                {
++                    float mid=(lo+hi)*0.5;
++                    float dm=ScreenRayDepth(r,mid)-sd;
++                    if(dm>=0.0)hi=mid;else lo=mid;
++                }
++                float hitLambda=(lo+hi)*0.5;
++                float hd=abs(ScreenRayDepth(r,hitLambda)-sd);
++                float fineTolerance=max(0.002,min(thickness*0.25,0.02));
++                if(hd<=fineTolerance)
++                {
++                    float2 candidateUV=ScreenRayUV(r,hitLambda);
++                    float3 hitNormal=DecodeFirestormNormalRaw(GetRawNormalData(candidateUV));
++                    float hitFacing=-dot(rayDir,hitNormal);
++                    if(hitFacing>=HiZTraceHitFacingMin)
++                    {
++                        hitUV=candidateUV;hitDistance=ScreenRayDistance(r,hitLambda);confidence=EdgeConfidence(hitUV)*DistanceConfidence(hitDistance);averageMip=mipSum/max(iterations,1.0);
++                        if(confidence>1e-5){rejectReason=0.0;return true;}rejectReason=5.0;return false;
++                    }
++                    lastFineReject=6.0;
++                }
++                else lastFineReject=4.0;
+             }
++            else lastFineReject=4.0;
+         }
+-        // Empty/non-overlapping tile or a conservative coarse overlap that did
+-        // not survive mip-0 slab testing: advance to this cell boundary and
++        // Empty/non-overlapping tile or a conservative candidate that failed
++        // strict mip-0 crossing/facing validation: advance to the next cell and
+         // climb back toward the configured coarse level.
+         lambda=min(exitLambda+epsLambda,1.0);mip=min(mip+1,clamp(HiZTraceStartMip,1,9));
+     }
++    if(rejectReason==3.0&&lastFineReject>0.0)rejectReason=lastFineReject;
+     averageMip=mipSum/max(iterations,1.0);return false;
+ }
+ 
+ float3 RejectColor(float r)
+ {
+-    if(r<0.5)return float3(1,1,1);if(r<1.5)return float3(1,0,1);if(r<2.5)return float3(1,0.5,0);if(r<3.5)return float3(0,0.3,1);if(r<4.5)return float3(1,0,0);return float3(1,1,0);
++    if(r<0.5)return float3(1,1,1);      // hit / none
++    if(r<1.5)return float3(1,0,1);      // ray direction
++    if(r<2.5)return float3(1,0.5,0);    // offscreen / build failure
++    if(r<3.5)return float3(0,0.3,1);    // exhausted / no overlap
++    if(r<4.5)return float3(1,0,0);      // strict crossing failed
++    if(r<5.5)return float3(1,1,0);      // confidence failed
++    return float3(0,1,1);               // hit surface facing failed
+ }
+ 
+ float4 HiZTracePS(float4 pos:SV_Position,float2 uv:TEXCOORD,out float4 meta:SV_Target1):SV_Target0
+@@ -328,10 +376,10 @@
+     if(abs(m.r)<=1e-6&&cur.a<=1e-6)return float4(0.0,0.0,0.0,1.0);float reason=m.r<0.0?-m.r:0.0;return float4(RejectColor(reason),1.0);
+ }
+ 
+-technique SL_HiZ_Trace_v0_1_Compare
++technique SL_HiZ_Trace_v0_2_FineValidate
+ <
+-    ui_label="SL Hi-Z Trace v0.1 - Depth-Slab Compare";
+-    ui_tooltip="Standalone hierarchical depth-slab tracer. Diagnostic only: does not composite or replace v0.35 yet. Put this technique after v0.35 and Temporal so its comparison display is not modified by later effects.";
++    ui_label="SL Hi-Z Trace v0.2 - Fine Hit Validate";
++    ui_tooltip="Hierarchy traversal from v0.1 with strict mip-0 front-to-back crossing, bisection refinement, and hit-normal facing validation. Diagnostic only; put after v0.35 and Temporal.";
+ >
+ {
+     pass Trace
+
+--- LINK DELTA ---
+--- SLHiZTraceLink_v0.1.cpp
++++ SLHiZTraceLink_v0.2.cpp
+@@ -1,6 +1,6 @@
+ // SLHiZTraceLink.cpp
+ // Links SL Hi-Z v0.1b private pyramid textures and the v0.35 raw SSR buffer
+-// into semantics consumed by SL_HiZ_Trace_v0_1_Compare.fx.
++// into semantics consumed by SL_HiZ_Trace_v0_2_FineValidate.fx.
+ #define WIN32_LEAN_AND_MEAN
+ #define NOMINMAX
+ #include <windows.h>
+@@ -9,7 +9,7 @@
+ 
+ static constexpr const char *kHiZEffect = "SL_HiZ_v0_1b_Infrastructure.fx";
+ static constexpr const char *kOldSSREffect = "SL_SSR_v0_35_LegacyResolve.fx";
+-static constexpr const char *kTraceEffect = "SL_HiZ_Trace_v0_1_Compare.fx";
++static constexpr const char *kTraceEffect = "SL_HiZ_Trace_v0_2_FineValidate.fx";
+ 
+ static bool bind_texture(reshade::api::effect_runtime *runtime, const char *effect, const char *variable_name, const char *semantic)
+ {
+@@ -77,8 +77,8 @@
+     mirror_float(runtime, "PBRRoughnessPower");
+ }
+ 
+-extern "C" __declspec(dllexport) const char *NAME = "SL Hi-Z Trace Link";
+-extern "C" __declspec(dllexport) const char *DESCRIPTION = "Links the validated SL Hi-Z depth pyramid and v0.35 raw SSR to the standalone Hi-Z tracer comparison effect.";
++extern "C" __declspec(dllexport) const char *NAME = "SL Hi-Z Trace Link v0.2";
++extern "C" __declspec(dllexport) const char *DESCRIPTION = "Links the validated SL Hi-Z depth pyramid and v0.35 raw SSR to the standalone Hi-Z v0.2 fine-validation comparison effect.";
+ 
+ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID)
+ {
