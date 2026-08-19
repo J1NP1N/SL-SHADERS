@@ -2,19 +2,24 @@
 
 Date: 2026-08-19
 
-Result: **FAIL for recovery, informative**.
+Result: **FAIL for recovery, informative; original interpretation corrected after follow-up**.
 
-User supplied diagnostics showing the avatar-shaped missing-reflection region is visible not only in the final composite but also in `Ray hit mask` and `Reflection base removal x10`.
+User supplied diagnostics showing the avatar-adjacent missing-reflection region is visible not only in the final composite but also in `Ray hit mask` and `Reflection base removal x10`.
 
-Interpretation:
+Initial interpretation incorrectly treated the black region as unavailable background/disocclusion data. The user clarified the diagnostic polarity: **white is the good/accepted reflection hit; the black in-between region is the defect.**
 
-- The remaining artifact is upstream of material weighting and composite.
-- v0.16 energy-style receiver replacement removed the dark cast-shadow bleed, but it cannot fill pixels where no SSR hit exists.
-- v0.17's limited oversized-depth-crossing skip did not recover the missing reflected background.
-- The camera-angle dependence and hole already present in the ray-hit mask indicate a true screen-space disocclusion / single-layer visibility limitation: the background behind the foreground avatar is absent from the current screen depth/color buffers.
+Follow-up test:
 
-Conclusion:
+- `Hit Thickness` was raised as high as `0.30` while the problematic camera angle remained in view.
+- Reflected color remained good where SSR was already valid.
+- The black/missing region did **not** fill in.
 
-Do not continue tuning thickness, crossing count, or skip confidence as the primary fix. The next approach should supply missing reflection information from outside the current single-frame, single-layer ray result, e.g. temporally reprojected valid SSR history with confidence/rejection and/or a spatial/probe fallback for unresolved holes.
+Corrected conclusions:
 
-Keep v0.16 energy composite behavior; it solved the dark receiver/shadow bleed component of the artifact.
+- The artifact is upstream of material weighting and final composite because it is already present in the ray-hit diagnostic.
+- v0.16 energy-style receiver replacement remains useful; it removed the old dark cast-shadow bleed component.
+- v0.17 oversized-crossing skip did not fix the missing hit region.
+- **Hit Thickness is not the controlling failure for this region.** Do not continue global thickness tuning as the next step.
+- The remaining trace failure has not yet been identified. Candidate termination paths include reflected-ray direction rejection, leaving the projected screen/view, exhausting the trace before a crossing, oversized-crossing rejection after the skip budget, or confidence reaching zero.
+
+Next step: use v0.18 `Ray termination reason` to color-code the exact TraceSSR failure path on the black region before making another algorithmic change.
