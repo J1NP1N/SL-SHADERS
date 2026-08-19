@@ -20,7 +20,7 @@ Reusable findings from those repositories belong in [`docs/UPSTREAM_RENDERER_NOT
 
 ## Package and installer contract
 
-Every installable archive **must begin with `SL_` and end in `.zip`**. The installer at `tools/installer/SL_InstallLatest.ps1` intentionally discovers only the newest `SL_*.zip` in the configured Downloads directory. A package that does not follow this naming rule will not be selected automatically.
+Every installable archive **must begin with `SL_` and end in `.zip`**. The installer at [`tools/installer/SL_InstallLatest.ps1`](tools/installer/SL_InstallLatest.ps1) intentionally discovers only the newest `SL_*.zip` in the configured Downloads directory. A package that does not follow this naming rule will not be selected automatically.
 
 The installer has two operating modes.
 
@@ -54,43 +54,47 @@ The normal loop is:
 
 **Debug screens are mandatory for experimental renderer work.** New effects and bridge changes must expose enough diagnostics to distinguish source capture, registration, material data, geometry/ray transport, temporal state, and final composite problems. A black final output is not an adequate diagnostic.
 
-See `docs/DEBUG_PROTOCOL.md` for the required diagnostic design.
+See [`docs/DEBUG_PROTOCOL.md`](docs/DEBUG_PROTOCOL.md) for the required diagnostic design.
 
 ## Current recovered checkpoints
 
 | Subsystem | Newest recovered checkpoint | Notes |
 |---|---|---|
-| SLNativeBridge | v0.9a AlphaReplayMask | Native Firestorm depth/normals/alpha bridge line |
-| SLProbeBridge | v0.3b FBOAtlas | Earlier probe-irradiance bridge line |
-| SLProbeLighting | v1.6.6 / SSR v0.8 SourceProof | **Current active bridge source**; current SSR diagnostic work |
-| SLVolumetricBridge | v0.1d PrivateShadowCopies | Firestorm cascaded-shadow bridge |
-| SLSceneLayer | v0.1 UISeparation | Scene/UI boundary add-on |
-| iMMERSE Firestorm Native | v0.6 RawAOAlphaReceiver | Patches existing iMMERSE Launchpad/MXAO; no new C++ add-on |
-| HybridGI | v0.14 BalancedAreaTemporal | Latest recovered HybridGI effect package |
-| HBAO | v0.5 SmoothAO | Latest recovered standalone HBAO FX |
-| SSGI | v0.3 RayMarch | Latest recovered standalone SSGI package |
+| SLNativeBridge | v0.9a AlphaReplayMask | Native Firestorm depth/normals/alpha bridge line; archived under `packages/latest/` |
+| SLProbeBridge | v0.3b FBOAtlas | Earlier probe-irradiance bridge line; archived under `packages/latest/` |
+| SLProbeLighting | v1.6.6 / SSR v0.8 SourceProof | **Current active bridge/SSR diagnostic package** |
+| SLVolumetricBridge | v0.1d PrivateShadowCopies | Firestorm cascaded-shadow bridge; archived under `packages/latest/` |
+| SLSceneLayer | v0.1 UISeparation | Scene/UI boundary add-on; archived under `packages/latest/` |
+| iMMERSE Firestorm Native | v0.6 RawAOAlphaReceiver | Recovered integration checkpoint; patches existing iMMERSE Launchpad/MXAO rather than adding another standalone bridge |
+| HybridGI | v0.14 BalancedAreaTemporal | Archived under `packages/latest/` |
+| HBAO | v0.5 SmoothAO | Archived under `packages/latest/` |
+| SSGI | v0.3 RayMarch | Archived under `packages/latest/` |
 | Firestorm DEPTH override | v0.2.1 / SLProbeLighting v1.6.1 | Historical infrastructure milestone; superseded by later SLProbeLighting work |
 
 ## Current SSR state
 
-The active SSR work is `addons/SLProbeLighting/current-ssr-v0.8-sourceproof/`.
+The active recovery artifact is [`packages/latest/SL_SSR_v0_8_SourceProof.zip`](packages/latest/SL_SSR_v0_8_SourceProof.zip). The ZIP contains the v1.6.6 `SLProbeLighting.cpp`, FX, CMake/build files, README, and source-audit notes.
 
 The ray transport and scene-color path have already been proven. v0.8 is a source-proof diagnostic pass for Firestorm's authoritative material G-buffer (`specularRect`) and the copy/binding lifetime into ReShade. Do not resume SSR appearance/weight tuning until that material source is numerically proven.
 
 The v0.8 analyzer samples nine 8x8 blocks on a 3x3 screen grid (576 pixels total), not the whole frame. Test material objects must therefore occupy a substantial part of the viewport.
 
+For the exact current test and the v0.5 -> v0.8 reasoning, read [`docs/HANDOFF.md`](docs/HANDOFF.md).
+
 ## Repository layout
 
 ```text
-addons/         Native ReShade add-on source, grouped by add-on/version
-builds/         Observed built .addon snapshots; source is canonical
-effects/        ReShade FX/effect checkpoints
-integrations/   Third-party integration/patch work (currently iMMERSE)
-packages/       Installable SL_*.zip checkpoints
-tools/          Installer/helper scripts
-history/        Recovered historical project state and Git bundle
-docs/           Recovery/version/debug notes
+README.md
+packages/latest/        recovered current installable SL_*.zip checkpoints
+packages/README.md      package/version interpretation
+tools/installer/        actual install helper used with SL_*.zip packages
+docs/HANDOFF.md         live chat-swap/current-state checkpoint
+docs/DEBUG_PROTOCOL.md  required diagnostic design
+docs/UPSTREAM_RENDERER_NOTES.md
+history/                 recovered history notes / prior commit inventory
 ```
+
+The recovered ZIPs contain their corresponding source trees. As each subsystem is modified again, its working source should also be committed as normal browsable files alongside the package rather than relying on a ZIP as the only source representation.
 
 ## Version rule
 
@@ -100,9 +104,9 @@ Do not put multiple old FX files into the active shader folder and assume the ne
 
 ## Historical Git recovery
 
-`history/SL_Firestorm_Render_Extensions.bundle` preserves the actual Git history recovered from the previous `SL_Firestorm_Render_Extensions` repository archive. It contains the HybridGI/Firestorm-depth development history through the v0.14/depth-normalization work.
+A real prior `SL_Firestorm_Render_Extensions` Git repository was recovered from an older archive. Its 12 recovered commit IDs/messages are recorded in [`history/SL_Firestorm_Render_Extensions/RECOVERED_GIT_LOG.md`](history/SL_Firestorm_Render_Extensions/RECOVERED_GIT_LOG.md).
 
-The readable snapshot from that project is under `history/SL_Firestorm_Render_Extensions/`.
+The original historical graph is being treated as a genuine recovered repository artifact; it will not be recreated as invented commits in this new repo.
 
 ## Working rule
 
