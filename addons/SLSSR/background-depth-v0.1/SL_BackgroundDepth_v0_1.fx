@@ -190,8 +190,13 @@ float4 BackgroundDepthDebugPS(float4 pos : SV_Position, float2 uv : TEXCOORD) : 
     if (SLBackgroundDepthDisplay == 5)
         return float4(DepthViz(backgroundDepth).xxx, 1.0);
 
-    float deltaViz = DepthViz(delta * 8.0);
-    return float4(deltaViz.xxx, 1.0);
+    float signedDelta = backgroundDepth - primaryDepth;
+    float deltaViz = DepthViz(abs(signedDelta) * 8.0);
+
+    if (signedDelta > 0.0)
+        return float4(0.0, deltaViz, 0.0, 1.0);   // green = background farther
+
+    return float4(deltaViz, 0.0, deltaViz, 1.0); // magenta = background nearer
 }
 
 technique SL_BackgroundDepth_v0_1
