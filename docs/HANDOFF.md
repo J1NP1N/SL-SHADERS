@@ -6,13 +6,13 @@ This is the live project checkpoint.
 
 ## Current focus
 
-Opaque SSR plumbing/material response are proven. v0.16 fixed the dark additive-composite shadow bleed. The remaining camera-dependent missing reflection is upstream in `TraceSSR`.
+Opaque SSR plumbing/material response are proven. v0.16 fixed the dark additive-composite shadow bleed. The remaining camera-dependent missing avatar reflection is upstream in `TraceSSR`.
 
-The target no-hit region follows the upside-down silhouette of the avatar reflection. v0.20 directly tested the background-to-geometry-entry hypothesis and **failed**: the dedicated recovered-entry mask stayed essentially empty over the target while the target remained no-hit.
+The target no-hit region follows the upside-down silhouette of the avatar reflection.
 
 Installed native bridge may remain **SLProbeLighting v1.6.11 / v0.15 PBRAlphaProbe**.
 
-Current FX test: **SSR v0.21 NoHitHistory — PENDING RUNTIME**.
+Current FX test: **SSR v0.22 CrossingPath — PENDING RUNTIME**.
 
 ## Runtime status
 
@@ -24,11 +24,12 @@ Current FX test: **SSR v0.21 NoHitHistory — PENDING RUNTIME**.
 - v0.14 LegacyDielectricFallback: CONCEPT PASS — diffuse-only legacy surfaces can receive conservative SSR without authored spec maps; strength remains tunable.
 - v0.15 PBRAlphaProbe: INCONCLUSIVE / selector miss — known PBR alpha-blend glass fixture did not light up. Glass work remains parked.
 - v0.16 EnergyComposite: PARTIAL PASS — dark cast-shadow ghost was removed/reduced by receiver base replacement.
-- v0.17 DisocclusionSkip: FAIL for the BLUE target / informative — ORANGE cleanly identifies the separate oversized/disocclusion crossing class.
-- v0.18 RayRejectReasons: PASS as diagnostic — target missing reflection is BLUE/no accepted depth crossing.
-- v0.19 TraceBudget: FAIL for target artifact, informative — BLUE persists even with Trace Steps 48 and Maximum Ray Distance 128, so total search range is not the cause.
-- v0.20 BackgroundEntry: FAIL for target artifact, informative — recovered-entry mask does not identify the target silhouette; direct background-to-first-positive-geometry entry is not the cause.
-- v0.21 NoHitHistory: PENDING — diagnostic-only classification of what failed no-crossing rays actually sampled.
+- v0.17 DisocclusionSkip: separate ORANGE class established. `Disocclusion Skips = 3` is the known working setting for that separate problem and should remain enabled while diagnosing the target.
+- v0.18 RayRejectReasons: target missing reflection classified BLUE/no accepted depth crossing.
+- v0.19 TraceBudget: FAIL for target artifact, informative — target persists with Trace Steps 48 and Maximum Ray Distance 128, so total search range is not the cause.
+- v0.20 BackgroundEntry: FAIL for target artifact, informative — dedicated recovered-entry mask stayed essentially empty over the target.
+- v0.21 NoHitHistory: PASS as diagnostic — target is **YELLOW / mixed-sign no-hit** while `Disocclusion Skips = 3` remains enabled.
+- v0.22 CrossingPath: PENDING — classifies the actual transition/candidate path that produces the mixed-sign no-hit.
 
 ## Proven facts
 
@@ -41,59 +42,64 @@ Current FX test: **SSR v0.21 NoHitHistory — PENDING RUNTIME**.
 - v0.16 energy composite fixed the dark receiver/shadow bleed component.
 - The remaining target artifact is already present in ray-hit/termination diagnostics, before material weighting/composite.
 - Hit Thickness is not the controlling fix; testing up to 0.30 did not fill the region.
-- Total ray range is not the controlling fix; v0.19 remained BLUE with an enlarged runtime budget.
-- ORANGE disocclusion rejection and BLUE no-crossing are separate failure classes.
-- v0.20 disproves the specific background-entry recovery hypothesis for the target region.
+- Total ray range is not the controlling fix.
+- ORANGE disocclusion rejection and the target no-hit class are separate problems.
+- The target ray samples real geometry on **both sides** of the depth relation: v0.21 `No-hit depth history` is YELLOW in the bad reflected-avatar region.
 
-## v0.21 NoHitHistory
+## Important correction: keep Disocclusion Skips = 3
 
-FX-only diagnostic revision. It preserves v0.20 tracing/material/composite behavior and adds two diagnostics.
+Do **not** set `Disocclusion Skips = 0` for the current target investigation.
 
-### `Display Mode -> No-hit depth history`
+The user correctly pointed out that ORANGE/disocclusion is already a separate, identified problem and a value of 3 fixes/handles that path in the current scene. Turning it off is a regression and contaminates the BLUE/YELLOW investigation.
 
-For the no-crossing path:
+Future tests should preserve `Disocclusion Skips = 3` unless the test is specifically about the ORANGE path.
 
-- WHITE = accepted reflection hit
-- BLUE = ray sampled background only; no non-background geometry was observed
-- GREEN = geometry sampled, but every sampled depth delta stayed `< 0` (ray stayed in front of sampled scene depth)
-- RED = geometry sampled, but every sampled depth delta stayed `>= 0` (ray stayed behind sampled scene depth)
-- YELLOW = both negative and non-negative geometry samples occurred, but no hit was accepted
-- PURPLE = no usable samples / unexpected no-hit state
+## v0.21 result
 
-Other rejection classes preserve the existing `Ray termination reason` colors.
+`No-hit depth history` showed the target upside-down avatar-reflection hole as **YELLOW**.
 
-### `Display Mode -> No-hit closest depth delta`
+YELLOW means the ray observed:
 
-For failed no-crossing rays that sampled geometry:
+- at least one geometry sample with `delta < 0`, and
+- at least one geometry sample with `delta >= 0`,
 
-- WHITE = at least one sample came very close to the scene depth
-- BLACK = sampled geometry remained comparatively far from the ray
+but still returned no accepted SSR hit.
 
-The display is normalized against the current `Hit Thickness` scale and is diagnostic only.
+Therefore the problem is no longer coverage/background/range. It is in transition ordering, candidate bracketing, binary refinement, or oversized-candidate handling.
 
-## Next runtime test
+Runtime record commit: `72e0a0564298a6813cc2eb399784abddf64fe76c`.
 
-1. Hot-install `SL_SSR_v0_21_NoHitHistory.zip`; Firestorm may remain open.
-2. Verify technique `SL SSR v0.21 - No-Hit History`.
-3. Use the same camera angle with the upside-down avatar-shaped missing reflection.
-4. Set `Disocclusion Skips = 0` for the cleanest classification.
-5. Return `Display Mode -> No-hit depth history`.
-6. If the target silhouette is GREEN, RED, or YELLOW, also return `No-hit closest depth delta`.
+## v0.22 CrossingPath
 
-Interpretation:
+FX-only diagnostic revision. It preserves v0.21 tracing/material/composite behavior and the existing disocclusion skip logic.
 
-- BLUE target = the ray never samples avatar/non-background depth at all; next work is screen-space coverage/projection/sampling traversal.
-- GREEN target = ray samples geometry but always remains in front; next work is step progression/crossing geometry.
-- RED target = ray samples geometry but is always already behind it; next work is start bias/sign handling.
-- YELLOW target = both signs exist but bracket/refinement continuity is failing.
+New display mode:
 
-v0.20 runtime record: `7a8874bd68b1669913681506b69f106c6ed0e395`.
-v0.21 source delta: `45c89fa8efdd432c923b2b282eff1daa5b1d9a84`.
+`Display Mode -> No-hit crossing candidate path`
 
-Local v0.21 package:
+Color key for the target:
 
-- `SL_SSR_v0_21_NoHitHistory.zip`
-- SHA-256 `60857cc1991658a3a252f0a050b44b9127eaf5bd1cb46eefa3b80f61c4550ff2`
+- WHITE = accepted SSR hit
+- CYAN = positive-to-negative transition seen, but no negative-to-positive hit candidate was ever formed
+- ORANGE = negative-to-positive hit candidate(s) reached binary refinement but remained oversized and were skipped/rejected
+- YELLOW = negative-to-positive candidate reached refinement but failed for another depth/refinement reason
+- PURPLE = mixed positive/negative history occurred without either direct transition class above
+- BLUE = other ordinary no-crossing path
+
+Keep:
+
+- `Disocclusion Skips = 3`
+- same camera angle
+- other current settings unchanged
+
+Return one screenshot of `No-hit crossing candidate path`.
+
+Source delta commit: `0efe13739c7e7d0445822bf0b91705a1b6cf5a39`.
+
+Local package:
+
+- `SL_SSR_v0_22_CrossingPath.zip`
+- SHA-256 `4d423aa85dcd0e50c35a60fbce4ee6dee6caf6fca0689a75b4f601313efa4808`
 
 ## Glass checkpoint
 
@@ -111,22 +117,16 @@ v0.15 first-segment PBR-alpha probe was black. Resume after the current ray-hole
 ## Important commits
 
 - v0.12 source: `eede4fd47b8284b3b7bf973c2d082da4825f153f`
-- v0.12 runtime PASS: `8655e4a9214fb1febe3477f3c8287ac1181e2f62`
 - v0.13 source: `886ead5ad289ff0ddf728ca669bc2b664a8b4843`
-- v0.13 runtime PASS: `99bba41723fb2b89ac38c97d66467940d5477c1b`
 - v0.14 source: `c2fe2cd1a8317d480cadc0fc4868c38129b3e2a2`
-- v0.15 runtime record: `ce1f122f1be908a12a4e1fc735171da0682dc805`
 - v0.16 source: `4658fb3d6baeeedd7e56cb76c5a3d031b4372c24`
-- v0.16 runtime record: `399e0075e49b4e628056f06bc7ae70c31f41e003`
 - v0.17 source: `17abe9b17ca54ff8d01e4d5c50c28f531664e578`
 - v0.18 source: `af126b4908715a242caf7c28e2a1bbc99b7dc2e4`
-- v0.18 runtime: `179a926ac5d6b788d680ce146b899f762d494576`
 - v0.19 source: `faeee069379d21e8bd824c0e3087b77be170898d`
-- v0.19 runtime: `e64462d2d304cafe39e552eb06c5983c86da9c29`
-- v0.19 refined diagnosis: `1c3737dbbf9aeed0240c4729593cc2fb6ca999ff`
 - v0.20 source: `26d6d431773b55e82528bc2b7f702820d223c980`
-- v0.20 runtime: `7a8874bd68b1669913681506b69f106c6ed0e395`
 - v0.21 source: `45c89fa8efdd432c923b2b282eff1daa5b1d9a84`
+- v0.21 runtime: `72e0a0564298a6813cc2eb399784abddf64fe76c`
+- v0.22 source: `0efe13739c7e7d0445822bf0b91705a1b6cf5a39`
 
 Original recovered v0.10 source commit: `dd7022c80e0acf89295b11bda00ee788ae10d166`.
 
