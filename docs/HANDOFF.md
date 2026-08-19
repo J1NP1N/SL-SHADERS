@@ -2,166 +2,112 @@
 
 Last updated: 2026-08-19
 
-This is the live project checkpoint.
+This is the live project checkpoint. A replacement chat should resume from this file and should not reconstruct the project from old chat history unless a required artifact is actually missing.
 
 ## Current focus
 
-Opaque SSR plumbing/material response are proven. The remaining artifact is an upside-down avatar-shaped missing region inside an otherwise correct floor reflection.
+Opaque SSR plumbing and material response are proven. The long-chased visual defect has now been **reclassified**.
 
-The target has now been isolated beyond a generic "hole": **v0.29 shows that the tracer reaches recognizable avatar/leg content as an oversized candidate, skips it as disocclusion, and many of those rays then terminate with no later hit.**
+It is **not** a missing avatar reflection and not a dark shadow. The avatar already reflects correctly where specular response exists. The actual defect is a **faint stretched ghost copy of the avatar behind the correct reflection**, visible in `Ray hit mask` as a gray / partial-confidence column trailing from the feet next to the solid correct reflection.
 
-Installed native bridge may remain **SLProbeLighting v1.6.11 / v0.15 PBRAlphaProbe**.
+Current FX lineage: **SSR v0.34 GhostCull**.
 
-Current FX test: **SSR v0.30 DeferredCandidate — PENDING RUNTIME**.
+Installed native bridge may remain **SLProbeLighting v1.6.11 / v0.15 PBRAlphaProbe** from the prior line; v0.31-v0.34 were FX-only experiments.
 
-v0.27 FullResBaseline and v0.28 ScreenDDAPrototype remain prepared, but v0.30 should be read first because it directly tests the proven skip/misclassification chain.
+There is **no next runtime build prepared yet** after v0.34. The next implementation decision should be based on ray length / grazing stretch, or move structurally to a native planar reflection path.
 
-## Runtime status
+## Corrected cause
 
-- v0.10 MainPassGate: PASS — full-resolution main-pass `specularRect` acquisition proven.
-- v0.11 MainPassConsume: FAIL/informative — borrowed private GL texture sampled black in FX.
-- v0.12 ReShadePublish: PASS — ReShade-owned material publication fixed sampling.
-- v0.13 LegacyRGBResponse: PASS — legacy `specularRect.rgb` drives SSR even when alpha/glossiness is zero.
-- v0.14 LegacyDielectricFallback: CONCEPT PASS — diffuse-only legacy surfaces can receive conservative SSR without authored spec maps.
-- v0.15 PBRAlphaProbe: INCONCLUSIVE — known PBR alpha-blend glass fixture did not light up; glass work parked.
-- v0.16 EnergyComposite: PARTIAL PASS — dark additive receiver/shadow bleed removed/reduced.
-- v0.17 DisocclusionSkip: separate ORANGE class established. **Keep `Disocclusion Skips = 3`**; user reports this handles the known disocclusion issue.
-- v0.18 RayRejectReasons: target missing reflection classified BLUE/no accepted crossing.
-- v0.19 TraceBudget: FAIL/informative — enlarged trace range did not solve target.
-- v0.20 BackgroundEntry: FAIL/informative — background-entry recovery did not identify target.
-- v0.21 NoHitHistory: PASS diagnostic — target rays sample both negative and non-negative depth deltas.
-- v0.22 CrossingPath: PASS diagnostic — target rays form a real negative-to-positive candidate that refines oversized.
-- v0.23 DeepRefine: FAIL/informative — 5 -> 9 binary steps did not solve target.
-- v0.24 SilhouetteEdge: FAIL/informative — terminal silhouette recovery fired on only sparse pixels.
-- v0.25 SilhouetteGate: PASS diagnostic / architecture fail — target mostly remained ordinary BLUE; most rays never reached the terminal silhouette gate after normal skips.
-- v0.26 OriginBiasAudit: PARTIAL/INFORMATIVE — corrected small origin bias makes the artifact recede slightly, but does not remove it.
-- v0.29 CandidateIdentity: **PASS diagnostic / causal isolation** — `Skip-then-no-hit mask` matches the missing reflected-avatar region, `First oversized candidate color` reconstructs recognizable avatar/leg content, and candidate count is low. The intended reflected object is being found and then discarded by the skip path.
-- v0.30 DeferredCandidate: PENDING — preserves all normal disocclusion skipping and uses the first actually-skipped candidate only if no later valid hit is found.
+The current ghost is a camera-space SSR grazing artifact.
 
-## Current proven facts
+The reflection ray is derived from the camera/view-space surface point and normal, marched against the camera depth buffer, then samples on-screen scene color. Floor pixels behind/around the avatar can therefore launch long grazing reflected rays that accept the avatar far from where a true 3D reflection would place it. This produces the stretched secondary image and makes the artifact camera-dependent.
 
-- The artifact exists in ray-hit diagnostics before material weighting/composite.
-- Global `Hit Thickness` is not the controlling fix; testing up to 0.30 did not remove the target.
-- Total ray range is not the fix.
-- The target ray reaches real geometry on both sides of the depth relation.
-- A real `previousDelta < 0 && delta >= 0` candidate is formed.
-- More binary refinement does not make the positive sample satisfy fixed global thickness.
-- v0.25 proves terminal-only silhouette recovery is too late for most target rays.
-- Old ray-origin bias was incorrectly coupled to thickness. Correcting it helps slightly but does not solve the target.
-- `Disocclusion Skips = 3` must remain enabled; setting it to 0 regresses a separate known issue.
-- **v0.29 proves the current skip policy can discard the intended reflected avatar and then return no hit.**
+The good reflection under the feet is generally a shorter path. The ghost behind it is a longer grazing path.
 
-## v0.29 CandidateIdentity runtime result
+**Confidence is not a reliable separator.** v0.34 proved that the correct reflection and ghost overlap enough in confidence that raising a confidence floor removes the ghost but also punches a hole in the real reflection.
 
-Returned diagnostics:
+## v0.31-v0.34 runtime results
 
-### `Skip-then-no-hit mask`
+### v0.31 DDATrace — FAIL for target
 
-The white region follows the same reflected lower-body/avatar area that is missing from the final reflection.
+Added a perspective-correct screen-pixel DDA trace core behind `Use Screen-Pixel DDA`. It removes the oversized-skip path and slab-tests stepped screen pixels directly.
 
-### `First oversized candidate color`
+Runtime: DDA accepts on the avatar but does not remove the ghost. Finer stride reduces reflection overall rather than correcting the artifact.
 
-The first discarded candidate reconstructs recognizable reflected avatar/leg content in the target. This is not merely wall/floor/background color.
+### v0.32 SeeThrough — FAIL / design mistake
 
-### `Oversized candidate count`
+`Trace Through Foreground` attempted unlimited foreground skipping and reflected the surface behind.
 
-The target contains only a small number of oversized candidates, consistent with the ray encountering the avatar candidate, skipping it, and then failing to find a better hit.
+Runtime: no visible difference. The toggle only affected the oversized-skip branch, which the target rays do not reliably enter.
 
-Conclusion:
+### v0.33 PlanarProto — concept only
 
-```text
-reflective floor ray
- -> reaches avatar candidate
- -> candidate refines oversized
- -> candidate is classified/discarded as disocclusion
- -> normal skip search continues
- -> no later valid hit exists for many target rays
- -> trace returns no reflection
-```
+Added a rough FX-only vertical screen-space mirror fill for missing SSR floor pixels.
 
-This target is therefore a candidate-classification/retention problem, not a generic missing-information hole.
+It demonstrated the general planar-reflection idea but is not geometrically correct and is not the fix.
 
-Runtime record commit: `50fad3d002d753b47d511dbc4deb01a868d7edc8`.
+### v0.34 GhostCull — FAIL / informative
 
-## v0.30 DeferredCandidate
+Added `Min Reflection Confidence`.
 
-FX-only isolated correction based on v0.29.
+Runtime: raising it can kill the gray ghost streak, but it also removes valid reflection under the avatar's feet. This proves confidence is the wrong discriminator.
 
-The existing disocclusion behavior is preserved exactly while tracing:
+Exact session record: `history/ssr/SSR_v0.31-v0.34_SESSION_RUNTIME.md`.
 
-1. On the first oversized candidate that is **actually skipped**, save its UV and distance.
-2. Continue the normal trace with `Disocclusion Skips = 3`.
-3. If a later valid hit is found, that later hit wins; behavior is unchanged.
-4. Only if the ray later terminates ordinary BLUE/no-crossing does v0.30 use the saved candidate as a reduced-confidence fallback.
-5. Off-screen, ray-direction, zero-confidence, and terminal-oversized failures do not use this fallback.
+## Prior proven infrastructure that remains valid
 
-New controls:
+- Firestorm full-resolution main-pass `specularRect` acquisition is proven.
+- ReShade-owned material publication is proven.
+- Legacy `specularRect.rgb` can drive SSR even when alpha/glossiness is zero.
+- PBR and legacy material classification infrastructure exists.
+- Scene-linear reflection source is proven.
+- SSR geometry transport works and produces real scene-color hits.
+- `Disocclusion Skips = 3` solved a separate known issue and should not be casually removed without regression testing.
+- Ray-origin bias was previously incorrectly coupled to `Hit Thickness`; that was corrected.
 
-- `Deferred Candidate Fallback = 1`
-- `Deferred Candidate Confidence = 0.55`
+The v0.17-v0.30 recovery machinery was built while the target was being interpreted as a missing reflected-avatar region. The new diagnosis means those paths should **not** automatically be treated as the architecture for fixing the current ghost. They have also created substantial settings/debug sprawl.
 
-Keep:
+## Recommended next direction
 
-- `Disocclusion Skips = 3`
-- `Hit Thickness = 0.18`
-- `Ray Origin Bias = 0.010`
+### Option A — next cheap diagnostic/fix
 
-New diagnostic:
+Instrument and gate by **hit distance / grazing stretch**, not confidence.
 
-`Display Mode -> Deferred-candidate fallback mask`
+Goal: distinguish the short correct reflection from the long behind-avatar ghost. A useful next diagnostic should visualize accepted-hit distance or normalized screen/ray stretch directly before changing composite behavior.
 
-WHITE means the final hit came specifically from the saved skipped candidate after the normal trace otherwise ended no-hit.
+If the ghost consistently occupies a separable long-ray band, test a conservative long-hit rejection/fade while checking that legitimate distant reflections are not removed.
 
-Runtime test:
+### Option B — structural fix
 
-1. Hot-install `SL_SSR_v0_30_DeferredCandidate.zip`; Firestorm may remain open.
-2. Verify technique `SL SSR v0.30 - Deferred Candidate`.
-3. Keep the settings above.
-4. Return:
-   - `Deferred-candidate fallback mask`
-   - `Final composite`
-5. Without moving camera, toggle `Deferred Candidate Fallback = 0` and compare `Final composite`.
+Implement a **scene-based planar reflection** in the native add-on: reflect scene/avatar geometry across the receiving floor plane rather than relying on the camera depth buffer for that class of reflection.
 
-Interpretation:
+This removes the camera-space failure class instead of tuning around it.
 
-- Fallback mask matches the former avatar hole and ON fills it while OFF restores it: causal PASS. The intended avatar candidate was being discarded by the skip path.
-- Fallback produces unrelated/incorrect foreground reflections: classification needs an additional geometric filter before production.
-- Fallback mask does not cover target: v0.29 correlation was insufficient; do not retain fallback.
+`SLProbeLighting.cpp` is **not currently present as a normal source file on GitHub `main`**. Earlier recovery artifacts may contain/reconstruct it, but it must be imported and verified before the native planar path should be treated as buildable from GitHub alone.
 
-Source delta commit: `283f5cf72c11d0817c69699656fc1dacf50ecddb`.
+## Current source/recovery state
 
-Local package:
+Uploaded bundle:
 
-- `SL_SSR_v0_30_DeferredCandidate.zip`
-- SHA-256 `62069ed18c41d3ccbb9a2aa669af6a55746cc1db2c12655964e6d4b4840e5a26`
+`SL-SHADERS_ssr-v0.31-v0.34-session.bundle`
 
-## Trace-core audit / prepared prototypes
+- prerequisite: `47ba4ad3b9e884ab129f2558410f2c117ed06e2c`
+- bundle HEAD: `fc5d5c5ec5c78a16434ea441495301e811578d50`
+- SHA-256: `81e4578444077df9a6dbcc9f7e80c32a6f76500d2fb798bbc5f50ccfb2956d14`
 
-`docs/SSR_TRACE_CORE_AUDIT_2026-08-19.md` records the broader architecture findings.
+The bundle contains:
 
-Important points:
+- full v0.34 FX blob `08f9c78e0eeb50ec9c3f08c0e278afc9f841a78`
+- exact runtime record blob `17b574ec29edfef5913c0f0d6c4538abfbd7cd19`
+- v0.30 -> v0.34 patch blob `48321d06ec9868f59645557c0a09616f765c7dd5`
 
-1. Ray-origin bias was incorrectly tied to `Hit Thickness`; fixed in v0.26.
-2. Strict sign-crossing/binary refinement assumes local depth continuity that silhouettes do not provide.
-3. Current SSR receiver trace is half resolution; v0.27 FullResBaseline remains available if resolution needs isolation.
-4. Firestorm native SSR uses adaptive depth-error behavior materially different from this custom marcher.
-5. v0.28 ScreenDDAPrototype is prepared as a trace-core replacement using contiguous screen-pixel traversal and perspective-correct depth-slab testing.
+See `history/ssr/SSR_v0.31-v0.34_BUNDLE_PROVENANCE.md` for import verification.
 
-### v0.27 FullResBaseline
-
-Same trace family, one receiver ray per full-resolution pixel.
-
-Source delta: `d0945f9a894ff04259e6a1240f60698a7ff4ce0c`.
-
-### v0.28 ScreenDDAPrototype
-
-Experimental alternate trace core with contiguous native screen-pixel traversal and finite depth-slab testing. Material response/composite remain unchanged.
-
-Source delta: `b59bc237430a81c885ac719830785b2231d25336`.
+Important: the uploaded bundle proves the full FX exists and is recoverable, but the GitHub connector in this chat does not expose a direct local-file-to-repository upload path. Do not claim the 69 KB full FX is a normal GitHub source file until the expected blob/path is independently verified on GitHub.
 
 ## Glass checkpoint
 
-Known test material:
+Known glass fixture remains parked while reflection transport is stabilized:
 
 - PBR, Alpha Mode Blend, base alpha 0.500
 - metallic factor 1.000, roughness factor 1.000
@@ -170,15 +116,28 @@ Known test material:
 - ORM UUID `ae33719a-14d1-d228-2ad1-70adddebe890`
 - Normal UUID `4ed76883-9057-3be5-c18e-1b878bf9dd88`
 
-v0.15 first-segment PBR-alpha probe was black. Resume after current ray classification is settled.
+v0.15 first-segment PBR-alpha probe was inconclusive/black. Do not mix glass debugging into the current ghost investigation.
 
 ## Runtime-development rules
 
 1. Every installable ZIP starts with `SL_`.
 2. FX-only package = hot install; Firestorm may remain open.
 3. Native add-on/build package = close Firestorm before install.
-4. Debug screens/readouts are mandatory.
-5. Loop: build -> commit source delta/checkpoint -> user runs real Firestorm -> report result -> update handoff -> next revision.
+4. Debug screens/readouts are mandatory for experimental renderer changes.
+5. Loop: build -> commit source/checkpoint -> user runs real Firestorm -> report screenshots/readouts/errors -> update handoff -> next revision.
 6. Semantic-bound alone is not proof of shader-visible payload.
-7. New versions require visible version identifiers.
+7. Every new FX version needs an unambiguous visible technique/version identifier.
 8. Never call a binary package remotely backed up until byte count/checksum is independently verified.
+9. When runtime evidence changes the diagnosis, update this handoff immediately rather than carrying the old framing forward.
+
+## Fresh-chat bootstrap
+
+Read in this order:
+
+1. `docs/HANDOFF.md`
+2. `history/ssr/SSR_v0.31-v0.34_SESSION_RUNTIME.md`
+3. `history/ssr/SSR_v0.31-v0.34_BUNDLE_PROVENANCE.md`
+4. `docs/SSR_TRACE_CORE_AUDIT_2026-08-19.md` only if changing the trace core
+5. `docs/UPSTREAM_RENDERER_NOTES.md` only if viewer-source details are needed
+
+Do not ask the user to retell the v0.31-v0.34 session unless these files are demonstrably missing the needed runtime observation.

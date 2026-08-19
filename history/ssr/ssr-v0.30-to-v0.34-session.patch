@@ -1,0 +1,443 @@
+--- /tmp/v030base/SL_SSR_v0_1_LegacyFirst.fx	2026-08-19 06:02:28.000000000 +0000
++++ /home/claude/v030/SL_SSR_v0_1_LegacyFirst.fx	2026-08-19 07:21:02.041134223 +0000
+@@ -1,7 +1,7 @@
+-// SL_SSR_v0_30_DeferredCandidate.fx
++// SL_SSR_v0_34_GhostCull.fx
+ // Firestorm-native-data screen-space reflections for ReShade.
+ //
+-// v0.30 lineage / current goals:
++// v0.31 lineage / current goals:
+ //   - legacy SL materials first
+ //   - exact Firestorm SL_DEPTH + SL_NORMALS
+ //   - exact Firestorm projection/inverse projection from SLProbeLighting
+@@ -46,6 +46,7 @@
+ 
+ #define SL_SSR_MAX_STEPS 48
+ #define SL_SSR_BINARY_STEPS 9
++#define SL_SSR_DDA_MAX_STEPS 128
+ 
+ // -----------------------------------------------------------------------------
+ // Firestorm bridge registration / exact matrices
+@@ -203,6 +204,85 @@
+     ui_min = 0.10; ui_max = 1.00; ui_step = 0.05;
+ > = 0.55;
+ 
++uniform float SSRMinConfidence
++<
++    ui_label = "Min Reflection Confidence";
++    ui_tooltip = "Reflections whose trace confidence is below this are culled entirely instead of shown faint. Kills the low-confidence grazing 'ghost' streak (the gray in Ray hit mask) while leaving solid full-confidence reflections intact. Raise until the stretched ghost behind the avatar disappears; lower if real reflection starts dropping out.";
++    ui_type = "drag";
++    ui_min = 0.0; ui_max = 0.95; ui_step = 0.05;
++> = 0.0;
++
++uniform int SSRPlanarAvatarDebug
++<
++    ui_label = "Planar Avatar Reflection (debug)";
++    ui_tooltip = "DEBUG. Where SSR finds NO hit on a reflective floor pixel (the avatar hole), fill it with a screen-space vertical mirror of the foreground standing above it, sampled from the scene color. Additive: pixels where SSR already found a hit (walls, environment) are NOT touched. This is a rough approximation (no perspective foreshortening) to see whether planar reflection is worth doing properly in the native pass.";
++    ui_type = "slider";
++    ui_min = 0; ui_max = 1;
++> = 0;
++
++uniform float SSRPlanarStrength
++<
++    ui_label = "Planar Strength";
++    ui_type = "drag";
++    ui_min = 0.0; ui_max = 1.0; ui_step = 0.05;
++> = 0.8;
++
++uniform int SSRPlanarMaxSearch
++<
++    ui_label = "Planar Up-Search (px)";
++    ui_tooltip = "Max native pixels searched upward to find the foreground contact above a floor pixel.";
++    ui_type = "slider";
++    ui_min = 16; ui_max = 512;
++> = 256;
++
++uniform float SSRPlanarContactJump
++<
++    ui_label = "Planar Contact Depth Jump";
++    ui_tooltip = "View-space depth jump (closer) that marks the floor->foreground contact edge.";
++    ui_type = "drag";
++    ui_min = 0.05; ui_max = 3.0; ui_step = 0.05;
++> = 0.5;
++
++uniform float SSRPlanarFade
++<
++    ui_label = "Planar Fade Distance";
++    ui_tooltip = "Screen-fraction below the contact over which the planar reflection fades out.";
++    ui_type = "drag";
++    ui_min = 0.05; ui_max = 1.0; ui_step = 0.05;
++> = 0.5;
++
++uniform int SSRTraceThroughForeground
++<
++    ui_label = "Trace Through Foreground (debug)";
++    ui_tooltip = "DEBUG. When 1, the ray ignores foreground (avatar) occluders entirely: it skips every oversized foreground crossing without limit and keeps marching until it reaches the surface behind, then reflects that. The floor shows the room as if the avatar were not there. This does NOT reflect the avatar; it removes her from the trace to prove the failure class is the foreground crossing.";
++    ui_type = "slider";
++    ui_min = 0; ui_max = 1;
++> = 0;
++
++uniform int SSRUseScreenDDA
++<
++    ui_label = "Use Screen-Pixel DDA";
++    ui_tooltip = "Experimental trace core. 1 uses a perspective-correct screen-pixel DDA / depth-slab intersection instead of the legacy exponential 3D marcher and its oversized-skip path. Material response and composite are unchanged. Intended to reflect thin concave geometry (avatars) without the skip/smear artifact.";
++    ui_type = "slider";
++    ui_min = 0; ui_max = 1;
++> = 0;
++
++uniform int SSRDDAMaxSteps
++<
++    ui_label = "DDA Max Pixel Steps";
++    ui_tooltip = "Maximum contiguous native Firestorm screen pixels traversed by the DDA ray.";
++    ui_type = "slider";
++    ui_min = 8; ui_max = SL_SSR_DDA_MAX_STEPS;
++> = 96;
++
++uniform float SSRDDAStride
++<
++    ui_label = "DDA Pixel Stride";
++    ui_tooltip = "Native pixels advanced per DDA step. 1.0 is finest (per-pixel); higher is faster but can skip thin features.";
++    ui_type = "drag";
++    ui_min = 1.0; ui_max = 4.0; ui_step = 0.5;
++> = 1.0;
++
+ uniform int SSRDisocclusionSkips
+ <
+     ui_label = "Disocclusion Skips";
+@@ -350,7 +430,8 @@
+         "First oversized candidate color\0"
+         "Oversized candidate count\0"
+         "Skip-then-no-hit mask\0"
+-        "Deferred-candidate fallback mask\0";
++        "Deferred-candidate fallback mask\0"
++        "DDA trace status\0";
+ > = 0;
+ 
+ uniform float SSRDebugGain
+@@ -927,7 +1008,11 @@
+                 if (disocclusionSkipsUsed > 0)
+                 {
+                     disocclusionUsed = 1.0;
+-                    confidence *= pow(saturate(SSRDisocclusionConfidence), (float)disocclusionSkipsUsed);
++                    // In trace-through debug the ray may skip many avatar pixels;
++                    // do not exponentially crush the surface-behind hit, or the
++                    // room reflection would vanish. Full-strength wall reflection.
++                    if (SSRTraceThroughForeground == 0)
++                        confidence *= pow(saturate(SSRDisocclusionConfidence), (float)disocclusionSkipsUsed);
+                 }
+                 if (confidence > 0.0)
+                 {
+@@ -961,7 +1046,7 @@
+             // Instead of killing the ray immediately, skip a small number of
+             // these crossings and keep marching. Confidence is reduced on any
+             // later hit so this remains a conservative hole-recovery path.
+-            if (disocclusionSkipsUsed < SSRDisocclusionSkips)
++            if (SSRTraceThroughForeground > 0 || disocclusionSkipsUsed < SSRDisocclusionSkips)
+             {
+                 // v0.30: defer the first candidate that we ACTUALLY skip. We still
+                 // continue tracing exactly as before; any later valid hit wins.
+@@ -1133,6 +1218,155 @@
+     return false;
+ }
+ 
++// v0.31: perspective-correct screen-pixel DDA trace core with a finite depth
++// slab (Morgan McGuire style). Unlike the exponential marcher above it has NO
++// oversized-crossing skip path: it slab-tests every stepped pixel, so thin
++// concave foreground geometry (avatar limbs, gaps between legs) is caught where
++// the ray actually crosses the near surface instead of being skipped as
++// disocclusion. Material response and composite downstream are unchanged.
++bool TraceSSR_DDA(
++    float3 originPos,
++    float3 originNormal,
++    float3 rayDir,
++    out float2 hitUV,
++    out float hitDistance,
++    out float confidence,
++    out float rejectReason)
++{
++    hitUV = 0.0;
++    hitDistance = 0.0;
++    confidence = 0.0;
++    rejectReason = 3.0;
++
++    if (rayDir.z >= -0.001)
++    {
++        rejectReason = 1.0;
++        return false;
++    }
++
++    float3 csOrig = originPos + originNormal * max(SSRRayOriginBias, 0.0);
++    float3 csEnd = csOrig + rayDir * max(SSRMaxDistance, 0.01);
++
++    float4 H0 = MulProj(float4(csOrig, 1.0));
++    float4 H1 = MulProj(float4(csEnd, 1.0));
++    if (abs(H0.w) <= 1e-8 || abs(H1.w) <= 1e-8)
++    {
++        rejectReason = 2.0;
++        return false;
++    }
++
++    float k0 = 1.0 / H0.w;
++    float k1 = 1.0 / H1.w;
++    float3 Q0 = csOrig * k0;
++    float3 Q1 = csEnd * k1;
++
++    float2 viewportSize = max(SLBridgeViewport.zw, float2(1.0, 1.0));
++    float2 P0 = (H0.xy * k0 * 0.5 + 0.5) * viewportSize;
++    float2 P1 = (H1.xy * k1 * 0.5 + 0.5) * viewportSize;
++
++    float2 screenDelta = P1 - P0;
++    if (dot(screenDelta, screenDelta) < 0.0001)
++        P1 += 0.01;
++
++    float2 delta = P1 - P0;
++    bool permute = false;
++    if (abs(delta.x) < abs(delta.y))
++    {
++        permute = true;
++        delta = delta.yx;
++        P0 = P0.yx;
++        P1 = P1.yx;
++    }
++
++    float stepDir = delta.x >= 0.0 ? 1.0 : -1.0;
++    float invdx = stepDir / max(abs(delta.x), 1e-6);
++    float3 dQ = (Q1 - Q0) * invdx;
++    float dk = (k1 - k0) * invdx;
++    float2 dP = float2(stepDir, delta.y * invdx);
++
++    float stride = clamp(SSRDDAStride, 1.0, 4.0);
++    dP *= stride;
++    dQ *= stride;
++    dk *= stride;
++
++    // Skip the receiver pixel itself. The independent normal bias handles the
++    // geometric self-intersection offset; this one-pixel DDA advance prevents
++    // re-reading the exact source pixel as a reflected hit.
++    float2 P = P0 + dP;
++    float3 Q = Q0 + dQ;
++    float k = k0 + dk;
++    float end = P1.x * stepDir;
++
++    // Seed the previous ray-Z estimate at the midpoint of the skipped source
++    // pixel interval so the first tested interval remains one stride wide.
++    float firstMidK = k0 + dk * 0.5;
++    float prevRayZ = (Q0.z + dQ.z * 0.5) /
++        (abs(firstMidK) > 1e-8 ? firstMidK : (firstMidK < 0.0 ? -1e-8 : 1e-8));
++
++    [loop]
++    for (int i = 0; i < SL_SSR_DDA_MAX_STEPS; ++i)
++    {
++        if (i >= SSRDDAMaxSteps || (P.x * stepDir) > end)
++            break;
++
++        float2 nativePixel = permute ? P.yx : P;
++        if (nativePixel.x < 0.0 || nativePixel.y < 0.0 ||
++            nativePixel.x >= viewportSize.x || nativePixel.y >= viewportSize.y)
++        {
++            rejectReason = 2.0;
++            break;
++        }
++
++        float midK = k + dk * 0.5;
++        float rayZNext = (Q.z + dQ.z * 0.5) /
++            (abs(midK) > 1e-8 ? midK : (midK < 0.0 ? -1e-8 : 1e-8));
++        float rayZMin = min(prevRayZ, rayZNext);
++        float rayZMax = max(prevRayZ, rayZNext);
++        prevRayZ = rayZNext;
++
++        float2 nativeUV = (floor(nativePixel) + 0.5) / viewportSize;
++        if (nativeUV.x > 0.0 && nativeUV.x < 1.0 &&
++            nativeUV.y > 0.0 && nativeUV.y < 1.0)
++        {
++            float2 candidateUV = ScreenUVFromFirestormUV(nativeUV);
++            float rawDepth = GetRawDepth(candidateUV);
++
++            if (!IsBackgroundDepth(rawDepth))
++            {
++                float sceneZ = ReconstructViewPosition(candidateUV, rawDepth).z;
++                bool overlapsDepthSlab =
++                    rayZMax >= (sceneZ - max(SSRThickness, 0.0)) &&
++                    rayZMin < sceneZ;
++
++                if (overlapsDepthSlab)
++                {
++                    float safeK = abs(k) > 1e-8 ? k : (k < 0.0 ? -1e-8 : 1e-8);
++                    float3 hitPoint = Q / safeK;
++                    float dist = length(hitPoint - csOrig);
++
++                    hitUV = candidateUV;
++                    hitDistance = dist;
++                    confidence = EdgeConfidence(candidateUV) * DistanceConfidence(dist);
++                    if (confidence > 0.0)
++                    {
++                        rejectReason = 0.0;
++                        return true;
++                    }
++
++                    rejectReason = 5.0;
++                    return false;
++                }
++            }
++        }
++
++        P += dP;
++        Q += dQ;
++        k += dk;
++    }
++
++    return false;
++}
++
+ float3 TraceRejectReasonColor(float reason, bool accepted)
+ {
+     if (accepted)
+@@ -1355,6 +1589,56 @@
+     return 1.0 - exp(-max(c, 0.0) * SSRDebugGain);
+ }
+ 
++// v0.33 planar prototype (rough, FX-only). For a floor pixel that SSR could not
++// reflect, mirror the foreground standing above it across its screen-space ground
++// contact and sample the scene color there. Approximate: assumes a vertical
++// screen mirror (no perspective foreshortening). Returns rgb + strength in .a;
++// .a == 0 means "no planar fill here" so the caller leaves the pixel untouched.
++float4 PlanarAvatarFill(float2 uv, float3 floorViewPos)
++{
++    float stepY = BUFFER_RCP_HEIGHT;
++    float floorZ = floorViewPos.z;   // view space, forward is -Z; closer = larger
++    float prevZ = floorZ;
++    float contactV = -1.0;
++
++    [loop]
++    for (int i = 1; i <= SSRPlanarMaxSearch; ++i)
++    {
++        float2 supUV = float2(uv.x, uv.y - (float)i * stepY);
++        if (supUV.y < 0.0 || !InsideFirestormWorld(supUV))
++            break;
++
++        float sd = GetRawDepth(supUV);
++        if (IsBackgroundDepth(sd))
++            break;                    // reached sky before any foreground
++
++        float sz = ReconstructViewPosition(supUV, sd).z;
++        if (sz - prevZ > SSRPlanarContactJump)   // sudden jump closer = contact edge
++        {
++            contactV = supUV.y;
++            break;
++        }
++        prevZ = sz;
++    }
++
++    if (contactV < 0.0)
++        return 0.0;
++
++    float sampleV = 2.0 * contactV - uv.y;       // mirror this floor pixel about contact
++    if (sampleV < 0.0 || sampleV > 1.0)
++        return 0.0;
++
++    float2 sampleUV = float2(uv.x, sampleV);
++    float sd2 = GetRawDepth(sampleUV);
++    if (IsBackgroundDepth(sd2))
++        return 0.0;                   // mirrored point is not foreground
++
++    float3 pc = max(GetSceneLinear(sampleUV).rgb, 0.0);
++    float dist = uv.y - contactV;
++    float fade = saturate(1.0 - dist / max(SSRPlanarFade, 1e-3));
++    return float4(pc, saturate(SSRPlanarStrength) * fade);
++}
++
+ // -----------------------------------------------------------------------------
+ // Passes
+ // -----------------------------------------------------------------------------
+@@ -1363,7 +1647,7 @@
+ {
+     // Ray-hit and raw-hit-color diagnostics test geometry/scene transport only.
+     // They must remain useful even if the material/specular semantic is missing.
+-    const bool geometryDebug = (SSRDisplayMode == 2 || SSRDisplayMode == 11 || SSRDisplayMode == 22 || SSRDisplayMode == 23 || SSRDisplayMode == 24 || SSRDisplayMode == 25 || SSRDisplayMode == 26 || SSRDisplayMode == 27 || SSRDisplayMode == 28 || SSRDisplayMode == 29 || SSRDisplayMode == 30 || SSRDisplayMode == 31 || SSRDisplayMode == 32 || SSRDisplayMode == 33);
++    const bool geometryDebug = (SSRDisplayMode == 2 || SSRDisplayMode == 11 || SSRDisplayMode == 22 || SSRDisplayMode == 23 || SSRDisplayMode == 24 || SSRDisplayMode == 25 || SSRDisplayMode == 26 || SSRDisplayMode == 27 || SSRDisplayMode == 28 || SSRDisplayMode == 29 || SSRDisplayMode == 30 || SSRDisplayMode == 31 || SSRDisplayMode == 32 || SSRDisplayMode == 33 || SSRDisplayMode == 34);
+ 
+     if (!(geometryDebug ? SSRTraceReady() : SSRReady()) ||
+         !InsideFirestormWorld(uv))
+@@ -1409,7 +1693,29 @@
+     float skippedCandidateCount;
+     float deferredCandidateUsed;
+ 
+-    bool traceAccepted = TraceSSR(viewPos, normal, rayDir, hitUV, hitDistance, confidence, disocclusionUsed, backgroundEntryUsed, rejectReason, noHitHistoryClass, minAbsDepthDelta, crossingPathClass, silhouetteEdgeUsed, silhouetteGateClass, firstOversizedUV, firstOversizedSeen, oversizedCandidateCount, skippedCandidateCount, deferredCandidateUsed);
++    bool traceAccepted;
++    if (SSRUseScreenDDA > 0)
++    {
++        // DDA path does not use the disocclusion/skip/silhouette machinery; zero
++        // those diagnostics so the shared display modes read cleanly.
++        disocclusionUsed = 0.0;
++        backgroundEntryUsed = 0.0;
++        noHitHistoryClass = 0.0;
++        minAbsDepthDelta = 1e6;
++        crossingPathClass = 0.0;
++        silhouetteEdgeUsed = 0.0;
++        silhouetteGateClass = 0.0;
++        firstOversizedUV = 0.0;
++        firstOversizedSeen = 0.0;
++        oversizedCandidateCount = 0.0;
++        skippedCandidateCount = 0.0;
++        deferredCandidateUsed = 0.0;
++        traceAccepted = TraceSSR_DDA(viewPos, normal, rayDir, hitUV, hitDistance, confidence, rejectReason);
++    }
++    else
++    {
++        traceAccepted = TraceSSR(viewPos, normal, rayDir, hitUV, hitDistance, confidence, disocclusionUsed, backgroundEntryUsed, rejectReason, noHitHistoryClass, minAbsDepthDelta, crossingPathClass, silhouetteEdgeUsed, silhouetteGateClass, firstOversizedUV, firstOversizedSeen, oversizedCandidateCount, skippedCandidateCount, deferredCandidateUsed);
++    }
+ 
+     if (SSRDisplayMode == 23)
+         return float4(TraceRejectReasonColor(rejectReason, traceAccepted), 1.0);
+@@ -1468,8 +1774,22 @@
+     if (SSRDisplayMode == 33)
+         return float4(deferredCandidateUsed.xxx, traceAccepted ? confidence : 1.0);
+ 
++    if (SSRDisplayMode == 34)
++        return float4(TraceRejectReasonColor(rejectReason, traceAccepted), 1.0);
++
+     if (!traceAccepted)
++    {
++        // v0.33 planar prototype: only where SSR found nothing on a reflective
++        // floor pixel. Walls/environment that DID get an SSR hit never reach here,
++        // so they are untouched.
++        if (SSRPlanarAvatarDebug > 0 && !geometryDebug)
++        {
++            float4 planar = PlanarAvatarFill(uv, viewPos);
++            if (planar.a > 0.0)
++                return float4(planar.rgb, planar.a);
++        }
+         return 0.0;
++    }
+ 
+     if (SSRDisplayMode == 24)
+         return float4(backgroundEntryUsed.xxx, confidence);
+@@ -1625,9 +1945,14 @@
+     // Firestorm's explicit specular RGB first, classic shiny/env second, and
+     // only then the small v0.14 neutral dielectric fallback. Alpha/glossiness
+     // remains metadata and does not gate SSR energy.
++    // v0.34: cull low-confidence grazing hits (the gray ghost streak) outright
++    // instead of presenting them faint. Full-confidence reflection is untouched.
++    float confidenceGate = step(SSRMinConfidence, rawSSR.a);
++
+     float materialWeight = pbr ? saturate(reflectivity) : 1.0;
+     float weight =
+         saturate(rawSSR.a) *
++        confidenceGate *
+         materialWeight *
+         fresnel *
+         max(SSRStrength, 0.0) *
+@@ -1687,10 +2012,10 @@
+     return color;
+ }
+ 
+-technique SL_SSR_v0_30_DeferredCandidate
++technique SL_SSR_v0_34_GhostCull
+ <
+-    ui_label = "SL SSR v0.30 - Deferred Candidate";
+-    ui_tooltip = "v0.30 preserves normal Disocclusion Skips, but saves the first actually-skipped oversized candidate. If the ray later ends ordinary no-hit, that candidate may be used as a reduced-confidence fallback. Any later valid hit still wins.";
++    ui_label = "SL SSR v0.34 - Ghost Cull";
++    ui_tooltip = "v0.31 keeps the full v0.30 deferred-candidate marcher AND adds a screen-pixel DDA trace core. Toggle Use Screen-Pixel DDA to compare: DDA slab-tests every stepped pixel with no oversized-skip path, aimed at reflecting thin concave avatar geometry without the skip/smear artifact. Material response and composite are identical.";
+ >
+ {
+     pass Trace
