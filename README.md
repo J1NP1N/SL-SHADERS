@@ -1,5 +1,7 @@
 # SL-SHADERS
 
+> **Starting a new chat? Read [`docs/HANDOFF.md`](docs/HANDOFF.md) first.** It is the live project checkpoint: current build, proven facts, current failure, next runtime test, and exact report-back requested.
+
 Second Life / Firestorm shader, ReShade FX, and native ReShade add-on work.
 
 This repository is the source of truth for the renderer-data bridges and effects developed for Firestorm. It is intentionally broader than SSR: SSR is one subsystem alongside native depth/normals, AO, SSGI/HybridGI, probe lighting, volumetrics, UI separation, and third-party ReShade integration work.
@@ -13,6 +15,8 @@ These are the renderer-source references used when auditing Firestorm and compar
 - ReShade: https://github.com/crosire/reshade
 
 Firestorm is the implementation target. Black Dragon is a useful comparative reference for features it already implements natively, such as SSR and volumetric lighting; it is not assumed to have identical buffer lifetime or render ordering.
+
+Reusable findings from those repositories belong in [`docs/UPSTREAM_RENDERER_NOTES.md`](docs/UPSTREAM_RENDERER_NOTES.md), with pinned commit/path references, so future chats do not repeat broad source audits.
 
 ## Package and installer contract
 
@@ -102,4 +106,4 @@ The readable snapshot from that project is under `history/SL_Firestorm_Render_Ex
 
 ## Working rule
 
-Every meaningful source, diagnostic, or architectural change gets committed here with the relevant README/status update. Generated ZIPs and chat history are not the only copy of project state.
+Every meaningful source, diagnostic, or architectural change gets committed here with the relevant README/status update. **If the current test or conclusion changes, update `docs/HANDOFF.md` in the same commit.** Generated ZIPs and chat history are not the only copy of project state.
