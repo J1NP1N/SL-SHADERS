@@ -8,15 +8,13 @@ This is the live project checkpoint.
 
 Opaque SSR plumbing/material response are proven. The remaining artifact is an upside-down avatar-shaped missing region inside an otherwise correct floor reflection.
 
-Do **not** treat the current target as a generic hole to fill. The immediate question is now:
-
-> Is the first oversized candidate that the marcher labels/discards as `disocclusion` actually the avatar reflection we intended to hit?
+The target has now been isolated beyond a generic "hole": **v0.29 shows that the tracer reaches recognizable avatar/leg content as an oversized candidate, skips it as disocclusion, and many of those rays then terminate with no later hit.**
 
 Installed native bridge may remain **SLProbeLighting v1.6.11 / v0.15 PBRAlphaProbe**.
 
-Current FX test: **SSR v0.29 CandidateIdentity — PENDING RUNTIME**.
+Current FX test: **SSR v0.30 DeferredCandidate — PENDING RUNTIME**.
 
-v0.27 FullResBaseline and v0.28 ScreenDDAPrototype are prepared but should not replace the isolation test unless v0.29 is read first.
+v0.27 FullResBaseline and v0.28 ScreenDDAPrototype remain prepared, but v0.30 should be read first because it directly tests the proven skip/misclassification chain.
 
 ## Runtime status
 
@@ -36,94 +34,108 @@ v0.27 FullResBaseline and v0.28 ScreenDDAPrototype are prepared but should not r
 - v0.23 DeepRefine: FAIL/informative — 5 -> 9 binary steps did not solve target.
 - v0.24 SilhouetteEdge: FAIL/informative — terminal silhouette recovery fired on only sparse pixels.
 - v0.25 SilhouetteGate: PASS diagnostic / architecture fail — target mostly remained ordinary BLUE; most rays never reached the terminal silhouette gate after normal skips.
-- v0.26 OriginBiasAudit: PARTIAL/INFORMATIVE — corrected small origin bias makes the artifact **a little better / recede slightly**, but the avatar-shaped target remains. Origin bias contributes geometrically but is not the root cause.
-- v0.29 CandidateIdentity: PENDING — identifies the first oversized candidate that is skipped on rays which later terminate no-hit.
+- v0.26 OriginBiasAudit: PARTIAL/INFORMATIVE — corrected small origin bias makes the artifact recede slightly, but does not remove it.
+- v0.29 CandidateIdentity: **PASS diagnostic / causal isolation** — `Skip-then-no-hit mask` matches the missing reflected-avatar region, `First oversized candidate color` reconstructs recognizable avatar/leg content, and candidate count is low. The intended reflected object is being found and then discarded by the skip path.
+- v0.30 DeferredCandidate: PENDING — preserves all normal disocclusion skipping and uses the first actually-skipped candidate only if no later valid hit is found.
 
 ## Current proven facts
 
 - The artifact exists in ray-hit diagnostics before material weighting/composite.
 - Global `Hit Thickness` is not the controlling fix; testing up to 0.30 did not remove the target.
-- Total ray range is not the controlling fix.
+- Total ray range is not the fix.
 - The target ray reaches real geometry on both sides of the depth relation.
 - A real `previousDelta < 0 && delta >= 0` candidate is formed.
 - More binary refinement does not make the positive sample satisfy fixed global thickness.
 - v0.25 proves terminal-only silhouette recovery is too late for most target rays.
 - Old ray-origin bias was incorrectly coupled to thickness. Correcting it helps slightly but does not solve the target.
-- `Disocclusion Skips = 3` must remain enabled while isolating this target; setting it to 0 regresses a separate known issue.
+- `Disocclusion Skips = 3` must remain enabled; setting it to 0 regresses a separate known issue.
+- **v0.29 proves the current skip policy can discard the intended reflected avatar and then return no hit.**
 
-## Most important current hypothesis
+## v0.29 CandidateIdentity runtime result
 
-The current code treats every refined candidate with:
+Returned diagnostics:
+
+### `Skip-then-no-hit mask`
+
+The white region follows the same reflected lower-body/avatar area that is missing from the final reflection.
+
+### `First oversized candidate color`
+
+The first discarded candidate reconstructs recognizable reflected avatar/leg content in the target. This is not merely wall/floor/background color.
+
+### `Oversized candidate count`
+
+The target contains only a small number of oversized candidates, consistent with the ray encountering the avatar candidate, skipping it, and then failing to find a better hit.
+
+Conclusion:
 
 ```text
-finalDelta > Hit Thickness
+reflective floor ray
+ -> reaches avatar candidate
+ -> candidate refines oversized
+ -> candidate is classified/discarded as disocclusion
+ -> normal skip search continues
+ -> no later valid hit exists for many target rays
+ -> trace returns no reflection
 ```
 
-as an oversized/disocclusion candidate. If skips remain, that candidate is discarded immediately.
+This target is therefore a candidate-classification/retention problem, not a generic missing-information hole.
 
-The target may therefore be produced by this exact sequence:
+Runtime record commit: `50fad3d002d753b47d511dbc4deb01a868d7edc8`.
 
-```text
-reflective floor receiver
- -> reflected ray reaches avatar silhouette
- -> avatar surface creates a discontinuous/large positive depth delta
- -> valid avatar candidate is called "disocclusion"
- -> candidate is skipped
- -> no later valid crossing exists
- -> ray terminates BLUE
- -> upside-down avatar-shaped region receives no SSR
-```
+## v0.30 DeferredCandidate
 
-If this is true, the target is **not absent information**. The shader is locating the correct reflected object and deliberately discarding it.
+FX-only isolated correction based on v0.29.
 
-This is what v0.29 tests directly.
+The existing disocclusion behavior is preserved exactly while tracing:
 
-## v0.29 CandidateIdentity
+1. On the first oversized candidate that is **actually skipped**, save its UV and distance.
+2. Continue the normal trace with `Disocclusion Skips = 3`.
+3. If a later valid hit is found, that later hit wins; behavior is unchanged.
+4. Only if the ray later terminates ordinary BLUE/no-crossing does v0.30 use the saved candidate as a reduced-confidence fallback.
+5. Off-screen, ray-direction, zero-confidence, and terminal-oversized failures do not use this fallback.
 
-FX-only diagnostic revision based on v0.26 geometry. It does not change hit acceptance, material response, or composite behavior.
+New controls:
+
+- `Deferred Candidate Fallback = 1`
+- `Deferred Candidate Confidence = 0.55`
 
 Keep:
 
 - `Disocclusion Skips = 3`
 - `Hit Thickness = 0.18`
 - `Ray Origin Bias = 0.010`
-- same camera angle
 
-Required diagnostic 1:
+New diagnostic:
 
-`Display Mode -> First oversized candidate color`
+`Display Mode -> Deferred-candidate fallback mask`
 
-For failed rays that encountered an oversized candidate, this displays the **scene-linear color at the first candidate UV that the tracer discarded**.
+WHITE means the final hit came specifically from the saved skipped candidate after the normal trace otherwise ended no-hit.
+
+Runtime test:
+
+1. Hot-install `SL_SSR_v0_30_DeferredCandidate.zip`; Firestorm may remain open.
+2. Verify technique `SL SSR v0.30 - Deferred Candidate`.
+3. Keep the settings above.
+4. Return:
+   - `Deferred-candidate fallback mask`
+   - `Final composite`
+5. Without moving camera, toggle `Deferred Candidate Fallback = 0` and compare `Final composite`.
 
 Interpretation:
 
-- If the avatar's visible colors/shape reconstruct inside the bad reflected region, the marcher is finding the avatar and throwing it away as a false disocclusion.
-- If the image instead shows wall/floor/another foreground surface, then the discarded candidate is a real occluder and the target must be isolated after that event.
+- Fallback mask matches the former avatar hole and ON fills it while OFF restores it: causal PASS. The intended avatar candidate was being discarded by the skip path.
+- Fallback produces unrelated/incorrect foreground reflections: classification needs an additional geometric filter before production.
+- Fallback mask does not cover target: v0.29 correlation was insufficient; do not retain fallback.
 
-Required diagnostic 2:
-
-`Display Mode -> Skip-then-no-hit mask`
-
-- WHITE = ray skipped at least one oversized candidate and still terminated without a hit.
-- BLACK = otherwise.
-
-If this white mask matches the upside-down avatar-shaped target, the skip path is causally responsible for the missing reflection.
-
-Optional diagnostic:
-
-`Display Mode -> Oversized candidate count`
-
-Grayscale is candidate count / 4. One candidate is 25% gray, two is 50%, three is 75%, four+ is white.
-
-v0.26 runtime record: `7eb97e3ac69cc32530d3694668051021f8ef5459`.
-v0.29 source delta: `d76fc13b4b418bf79e29b35f4b3b6087e56df01e`.
+Source delta commit: `283f5cf72c11d0817c69699656fc1dacf50ecddb`.
 
 Local package:
 
-- `SL_SSR_v0_29_CandidateIdentity.zip`
-- SHA-256 `2bf94ec85e4ace0df68620df75a514f783113709643329d06de7999e1764a22d`
+- `SL_SSR_v0_30_DeferredCandidate.zip`
+- SHA-256 `62069ed18c41d3ccbb9a2aa669af6a55746cc1db2c12655964e6d4b4840e5a26`
 
-## Trace-core audit
+## Trace-core audit / prepared prototypes
 
 `docs/SSR_TRACE_CORE_AUDIT_2026-08-19.md` records the broader architecture findings.
 
@@ -131,17 +143,13 @@ Important points:
 
 1. Ray-origin bias was incorrectly tied to `Hit Thickness`; fixed in v0.26.
 2. Strict sign-crossing/binary refinement assumes local depth continuity that silhouettes do not provide.
-3. Current SSR receiver trace is half resolution, so v0.27 FullResBaseline remains available if resolution needs isolation.
+3. Current SSR receiver trace is half resolution; v0.27 FullResBaseline remains available if resolution needs isolation.
 4. Firestorm native SSR uses adaptive depth-error behavior materially different from this custom marcher.
 5. v0.28 ScreenDDAPrototype is prepared as a trace-core replacement using contiguous screen-pixel traversal and perspective-correct depth-slab testing.
 
-Do not jump to DDA solely to make the artifact disappear. Read v0.29 first so we know whether the legacy marcher is discarding the correct avatar hit. That fact will determine how the replacement should classify foreground candidates.
-
-## Prepared prototypes
-
 ### v0.27 FullResBaseline
 
-Same trace family, but one receiver ray per full-resolution pixel. Use only if a resolution ambiguity remains.
+Same trace family, one receiver ray per full-resolution pixel.
 
 Source delta: `d0945f9a894ff04259e6a1240f60698a7ff4ce0c`.
 
