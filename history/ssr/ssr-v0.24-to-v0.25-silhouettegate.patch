@@ -1,0 +1,154 @@
+--- v0.24/SL_SSR_v0_1_LegacyFirst.fx
++++ v0.25/SL_SSR_v0_1_LegacyFirst.fx
+@@ -1,7 +1,7 @@
+-// SL_SSR_v0_24_SilhouetteEdge.fx
++// SL_SSR_v0_25_SilhouetteGate.fx
+ // Firestorm-native-data screen-space reflections for ReShade.
+ //
+-// v0.24 lineage / current goals:
++// v0.25 lineage / current goals:
+ //   - legacy SL materials first
+ //   - exact Firestorm SL_DEPTH + SL_NORMALS
+ //   - exact Firestorm projection/inverse projection from SLProbeLighting
+@@ -23,6 +23,7 @@
+ //   - classify BLUE/no-hit rays by the depth samples they actually observed
+ //   - classify mixed-sign no-hit rays by actual crossing-candidate path
+ //   - recover terminal oversized candidates that converge onto a tight foreground silhouette edge
++//   - diagnose which silhouette-edge acceptance gate rejects remaining target candidates
+ //   - deepen binary refinement so valid silhouette crossings are not misclassified oversized
+ //   - limited skip-through for oversized foreground disocclusion crossings
+ //   - diagnostic classification of every geometry-trace rejection path
+@@ -317,7 +318,8 @@
+         "No-hit depth history\0"
+         "No-hit closest depth delta\0"
+         "No-hit crossing candidate path\0"
+-        "Silhouette-edge recovered hit mask\0";
++        "Silhouette-edge recovered hit mask\0"
++        "Silhouette-edge gate reason\0";
+ > = 0;
+ 
+ uniform float SSRDebugGain
+@@ -736,7 +738,8 @@
+     out float noHitHistoryClass,
+     out float minAbsDepthDelta,
+     out float crossingPathClass,
+-    out float silhouetteEdgeUsed)
++    out float silhouetteEdgeUsed,
++    out float silhouetteGateClass)
+ {
+     hitUV = 0.0;
+     hitDistance = 0.0;
+@@ -745,6 +748,7 @@
+     minAbsDepthDelta = 1e6;
+     crossingPathClass = 0.0;
+     silhouetteEdgeUsed = 0.0;
++    silhouetteGateClass = 0.0;
+     // v0.18 diagnostic codes on a failed trace:
+@@ -925,27 +929,47 @@
+             bool loDepthValidEdge = EvaluateRayDepth(loPosEdge, loUVEdge, loDeltaEdge);
+             bool silhouetteEdgeHit = false;
+ 
+-            if (SSRSilhouetteEdgeRecovery > 0 &&
+-                finalDepthValid &&
+-                finalDelta > SSRThickness &&
+-                loDepthValidEdge &&
+-                loDeltaEdge > -9e5 &&
+-                loDeltaEdge < 0.0)
++            // v0.25 diagnostic class for the terminal silhouette gate:
++            // 2 = refined positive side invalid/not oversized
++            // 3 = negative bracket side invalid/not negative geometry
++            // 4 = depth jump below threshold
++            // 5 = refined bracket wider than pixel-span threshold
++            // 6 = both depth-jump and pixel-span tests fail
++            // 7 = all silhouette gates pass
++            if (!finalDepthValid || finalDelta <= SSRThickness)
+             {
++                silhouetteGateClass = 2.0;
++            }
++            else if (!loDepthValidEdge || loDeltaEdge <= -9e5 || loDeltaEdge >= 0.0)
++            {
++                silhouetteGateClass = 3.0;
++            }
++            else
++            {
+                 float rayDepthLo = -loPosEdge.z;
+                 float rayDepthHi = -finalPos.z;
+                 float sceneDepthLo = rayDepthLo - loDeltaEdge;
+                 float sceneDepthHi = rayDepthHi - finalDelta;
+                 float foregroundDepthJump = sceneDepthLo - sceneDepthHi;
+ 
+                 float2 pixelSpan2 = abs(finalUV - loUVEdge) * float2(BUFFER_WIDTH, BUFFER_HEIGHT);
+                 float pixelSpan = max(pixelSpan2.x, pixelSpan2.y);
+ 
++                bool depthJumpPass = foregroundDepthJump >= SSRSilhouetteMinDepthJump;
++                bool pixelSpanPass = pixelSpan <= SSRSilhouetteMaxPixelSpan;
++
++                if (!depthJumpPass && !pixelSpanPass)
++                    silhouetteGateClass = 6.0;
++                else if (!depthJumpPass)
++                    silhouetteGateClass = 4.0;
++                else if (!pixelSpanPass)
++                    silhouetteGateClass = 5.0;
++                else
++                    silhouetteGateClass = 7.0;
++
+                 silhouetteEdgeHit =
+-                    foregroundDepthJump >= SSRSilhouetteMinDepthJump &&
+-                    pixelSpan <= SSRSilhouetteMaxPixelSpan;
++                    SSRSilhouetteEdgeRecovery > 0 &&
++                    depthJumpPass &&
++                    pixelSpanPass;
+             }
+@@ -1063,6 +1087,29 @@
+     return float3(0.0, 0.25, 1.0);        // BLUE: other no-crossing path
+ }
++
++float3 SilhouetteGateColor(float gateClass, bool accepted, float silhouetteEdgeUsed, float rejectReason)
++{
++    if (accepted && silhouetteEdgeUsed > 0.5)
++        return 1.0.xxx;
++    if (gateClass > 1.5 && gateClass < 2.5)
++        return float3(1.0, 0.0, 0.0);       // red: refined positive invalid/not oversized
++    if (gateClass > 2.5 && gateClass < 3.5)
++        return float3(0.0, 1.0, 1.0);       // cyan: no valid negative-side bracket
++    if (gateClass > 3.5 && gateClass < 4.5)
++        return float3(1.0, 1.0, 0.0);       // yellow: depth jump too small
++    if (gateClass > 4.5 && gateClass < 5.5)
++        return float3(1.0, 0.0, 1.0);       // magenta: pixel span too wide
++    if (gateClass > 5.5 && gateClass < 6.5)
++        return float3(1.0, 0.5, 0.0);       // orange: both threshold tests fail
++    if (gateClass > 6.5 && gateClass < 7.5)
++        return float3(0.0, 1.0, 0.0);       // green: all geometric gates pass, recovery disabled/zero confidence
++    return TraceRejectReasonColor(rejectReason, accepted);
++}
+@@ -1220,7 +1267,7 @@
+-    const bool geometryDebug = (SSRDisplayMode == 2 || SSRDisplayMode == 11 || SSRDisplayMode == 22 || SSRDisplayMode == 23 || SSRDisplayMode == 24 || SSRDisplayMode == 25 || SSRDisplayMode == 26 || SSRDisplayMode == 27 || SSRDisplayMode == 28);
++    const bool geometryDebug = (SSRDisplayMode == 2 || SSRDisplayMode == 11 || SSRDisplayMode == 22 || SSRDisplayMode == 23 || SSRDisplayMode == 24 || SSRDisplayMode == 25 || SSRDisplayMode == 26 || SSRDisplayMode == 27 || SSRDisplayMode == 28 || SSRDisplayMode == 29);
+@@ -1261,8 +1308,9 @@
+     float minAbsDepthDelta;
+     float crossingPathClass;
+     float silhouetteEdgeUsed;
++    float silhouetteGateClass;
+ 
+-    bool traceAccepted = TraceSSR(viewPos, normal, rayDir, hitUV, hitDistance, confidence, disocclusionUsed, backgroundEntryUsed, rejectReason, noHitHistoryClass, minAbsDepthDelta, crossingPathClass, silhouetteEdgeUsed);
++    bool traceAccepted = TraceSSR(viewPos, normal, rayDir, hitUV, hitDistance, confidence, disocclusionUsed, backgroundEntryUsed, rejectReason, noHitHistoryClass, minAbsDepthDelta, crossingPathClass, silhouetteEdgeUsed, silhouetteGateClass);
+@@ -1289,6 +1337,9 @@
+         return float4(silhouetteEdgeUsed.xxx, confidence);
+     }
++
++    if (SSRDisplayMode == 29)
++        return float4(SilhouetteGateColor(silhouetteGateClass, traceAccepted, silhouetteEdgeUsed, rejectReason), 1.0);
+@@ -1336,7 +1387,7 @@
+-    if (SSRDisplayMode == 25 || SSRDisplayMode == 26 || SSRDisplayMode == 27 || SSRDisplayMode == 28)
++    if (SSRDisplayMode == 25 || SSRDisplayMode == 26 || SSRDisplayMode == 27 || SSRDisplayMode == 28 || SSRDisplayMode == 29)
+         return float4(saturate(rawSSR.rgb), 1.0);
+@@ -1511,10 +1562,10 @@
+-technique SL_SSR_v0_24_SilhouetteEdge
++technique SL_SSR_v0_25_SilhouetteGate
+ <
+-    ui_label = "SL SSR v0.24 - Silhouette Edge";
+-    ui_tooltip = "v0.24 preserves the working disocclusion skips and conservatively recovers only the final oversized crossing when refinement resolves to a tight foreground silhouette depth edge.";
++    ui_label = "SL SSR v0.25 - Silhouette Gate";
++    ui_tooltip = "Diagnostic v0.25 preserves v0.24 behavior and color-codes the exact silhouette-edge gate that rejects each terminal oversized candidate.";
+ >
+ {
