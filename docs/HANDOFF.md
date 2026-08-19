@@ -6,11 +6,13 @@ This is the live project checkpoint. Update it whenever the active build, proven
 
 ## Current focus
 
-**Firestorm `specularRect` acquisition, ReShade-side publication, legacy/PBR classification, and legacy RGB material response are now proven. The immediate next step is a normal-composite presentation check before choosing the next algorithm change.**
+**Firestorm `specularRect` acquisition, ReShade-side publication, legacy/PBR classification, and explicit legacy RGB response are proven. The active test is legacy SSR on opaque surfaces that have no authored specular response.**
 
 Current proven native bridge: **SLProbeLighting v1.6.10 / SSR v0.12 ReShadePublish**.
 
 Current proven FX: **SSR v0.13 LegacyRGBResponse**.
+
+Current test FX: **SSR v0.14 LegacyDielectricFallback — PENDING RUNTIME**.
 
 Runtime status:
 
@@ -18,8 +20,9 @@ Runtime status:
 - v0.11 MainPassConsume: **FAIL, but informative** — the gated snapshot was selected, while the FX still sampled black from the borrowed native/private texture.
 - v0.12 ReShadePublish: **PASS** — a ReShade-owned RGBA16F publication target made `G-buffer specular RGB` visibly non-black in the FX.
 - material-class diagnostic on the current test scene: **legacy/cyan confirmed**.
-- Bridge Status on the current test scene: **healthy/cyan confirmed**.
-- v0.13 LegacyRGBResponse: **PASS for the targeted response correction** — legacy `specularRect.rgb` now produces nonzero reflected contribution and final weight without being annihilated by `specularRect.a == 0`.
+- Bridge Status: **healthy/cyan confirmed**.
+- v0.13 LegacyRGBResponse: **PASS** — legacy `specularRect.rgb` now produces visible SSR even when legacy `specularRect.a == 0`.
+- v0.14 LegacyDielectricFallback: **PENDING** — gives legacy opaque pixels with neither explicit specular RGB nor classic-shiny/env signal a small neutral fallback response; PBR remains unchanged.
 
 ## What is proven at runtime
 
@@ -27,16 +30,14 @@ Runtime status:
 - Compatibility DEPTH works.
 - `SL_SCENE_LINEAR` contains valid world scene color.
 - SSR ray-hit geometry works.
-- Raw reflected hit color contains real scene color.
+- **Raw hit color sees ordinary scene geometry regardless of whether the receiving surface has an authored specular map.**
 - The authoritative main-pass material G-buffer can be identified and read.
 - The private main-pass specular snapshot is an accurate copy of that source.
 - The material payload can be republished into a ReShade-owned target and sampled correctly by the FX.
-- The current known test object is classified by the normal-buffer flag as **legacy**, not PBR.
-- **Valid legacy specular RGB now reaches the applied SSR contribution even when legacy glossiness alpha is zero.**
+- The current known test object is classified by the normal-buffer flag as legacy, not PBR.
+- Valid legacy specular RGB reaches the applied SSR contribution even when legacy glossiness alpha is zero.
 
-The decisive v0.10 proof selected `tex 8, 3840 x 2027`, read clean RGBA8-style material data, and showed nonzero center RGB with a matching private snapshot. v0.12 then showed the same material payload visibly in `Display Mode -> G-buffer specular RGB` after ReShade-owned publication. v0.13 finally showed non-black `SSR contribution` and strong `Final reflection weight x10` on the legacy test cube.
-
-Conclusion: **the old black material diagnostic was a two-part plumbing problem followed by a legacy weighting mismatch: wrong deferred-draw selection, native/private GL texture interoperability, then alpha/glossiness incorrectly gating legacy SSR. Those are all closed.**
+Conclusion: **missing reflections on diffuse-only legacy surfaces are now a receiver/material-weighting problem, not a ray-tracing visibility problem.**
 
 ## Root-cause chain
 
@@ -50,67 +51,90 @@ Added a self-calibrating full-resolution gate. Runtime selected the `3840 x 2027
 
 ### v0.11 MainPassConsume
 
-Made the proven gated snapshot authoritative for `SL_GBUFFER_SPECULAR`, but the FX still sampled black from the borrowed private/native GL texture. This proved semantic-bound alone was not shader-visible payload proof.
+Made the proven gated snapshot authoritative for `SL_GBUFFER_SPECULAR`, but the FX still sampled black from the borrowed private/native GL texture. Semantic-bound alone was not shader-visible payload proof.
 
 Source delta commit: `018a21b4bd441b53526f7dc4ee22fd7320fd76be`.
 
 ### v0.12 ReShadePublish — proven
 
-Copies all four specular/material channels into a **ReShade-owned RGBA16F target** and publishes that owned view as `SL_GBUFFER_SPECULAR`.
+Copies all four specular/material channels into a ReShade-owned RGBA16F target and publishes that owned view as `SL_GBUFFER_SPECULAR`.
 
-Runtime showed:
-
-- `SL_GBUFFER_SPECULAR input source: GATED MAIN-PASS SNAPSHOT`
-- `SL_GBUFFER_SPECULAR FX publication: RESHADE-OWNED COPY`
-- `SL_GBUFFER_SPECULAR semantic bound: YES`
-- full-resolution published target
-- `G-buffer specular RGB` visibly populated in the FX
+Runtime showed the published full-resolution target, semantic bound, and visibly populated `G-buffer specular RGB`.
 
 Source delta commit: `eede4fd47b8284b3b7bf973c2d082da4825f153f`.
 Runtime result commit: `8655e4a9214fb1febe3477f3c8287ac1181e2f62`.
 
 ### v0.13 LegacyRGBResponse — proven
 
-FX-only; the v0.12 native add-on remains installed.
+FX-only; v0.12 native add-on remains installed.
 
-The pinned Firestorm native SSR post shader uses legacy `specularRect.rgb` directly to color the reflected scene contribution. It does not use legacy `specularRect.a` as a reflectivity gate.
+Changed only legacy material response:
 
-v0.13 changed only the legacy material response:
-
-- legacy `specularRect.rgb` directly tints the reflected scene color;
-- legacy `specularRect.a` remains a glossiness diagnostic but no longer gates SSR energy;
+- legacy `specularRect.rgb` directly tints reflected scene color;
+- legacy `specularRect.a` remains diagnostic glossiness and no longer gates SSR energy;
 - classic shiny/environment intensity remains a neutral fallback;
-- PBR response is unchanged;
-- ray marcher, depth, normals, scene-linear source, G-buffer publication, receiver protection, Fresnel, and tonemap/composite path are otherwise unchanged.
+- PBR response is unchanged.
 
-Runtime result:
+Runtime showed non-black `SSR contribution` and strong `Final reflection weight x10` on the legacy cube. Therefore `A=0` no longer kills valid legacy RGB response.
 
-- `SSR contribution` visibly non-black with colored reflected signal;
-- `Final reflection weight x10` strongly nonzero on the legacy cube;
-- therefore `A=0` no longer kills a valid legacy RGB response.
-
-The weight diagnostic also shows visible speckling/noise across parts of the ground/scene. Treat that as a separate ray/weight stability issue, not a failure of v0.13.
+The apparent speckled structure on the ground in the weight diagnostic was later identified by the user as the expected PBR sand material response, not evidence by itself of ray instability.
 
 Source delta commit: `886ead5ad289ff0ddf728ca669bc2b664a8b4843`.
 Runtime result commit: `99bba41723fb2b89ac38c97d66467940d5477c1b`.
 
+### v0.14 LegacyDielectricFallback — current test
+
+FX-only; v0.12 native bridge remains installed.
+
+Motivation: `Raw hit color` already sees the scene broadly. A legacy surface without a specular map can therefore have a valid SSR ray hit and still receive no visible reflection solely because material weighting reduces the result to zero.
+
+Legacy receiver priority is now:
+
+1. explicit Firestorm legacy `specularRect.rgb`;
+2. classic shiny/environment intensity from the normal G-buffer;
+3. small neutral dielectric fallback only if both signals are absent.
+
+Detection uses the raw Firestorm payload before user scaling:
+
+- authored signal = max(`specularRect.r/g/b`, classic-shiny/env intensity);
+- `Legacy No-Spec Threshold` default = `0.005`;
+- `Legacy No-Spec Fallback` default = `0.040`.
+
+The existing view-angle Fresnel still multiplies this response, so the fallback is intended to remain subtle and strengthen at grazing angles. PBR ORM behavior is unchanged.
+
+New diagnostic:
+
+`Display Mode -> Legacy no-spec fallback mask`
+
+- white = legacy pixel eligible for the synthetic fallback;
+- black = explicit legacy specular/classic shiny, PBR, or background.
+
+Source delta commit: `c2fe2cd1a8317d480cadc0fc4868c38129b3e2a2`.
+
 ## Next runtime step
 
-Stay on **v0.13 LegacyRGBResponse**. No new build yet.
+Install **SL_SSR_v0_14_LegacyDielectricFallback.zip**. FX-only; Firestorm may remain open.
 
-Return one screenshot with:
+Verify the technique label:
 
-`Display Mode -> Off`
-
-Use the same scene/camera if practical. This is only to judge the real composite at normal scale.
+`SL SSR v0.14 - Legacy Dielectric Fallback`
 
 Do **not** press Analyze.
 
-Interpretation after that screenshot:
+Return the same scene in these views:
 
-- if the normal composite is directionally correct but noisy/unstable, the next revision should isolate ray-confidence/temporal stability without changing the now-proven material path;
-- if the contribution is essentially invisible despite the strong diagnostic weight, inspect presentation/tonemap scaling before temporal work;
-- if it is visibly over-strong or reflective on inappropriate surfaces, inspect response shaping/material eligibility before temporal work.
+1. `Legacy no-spec fallback mask`
+2. `SSR contribution`
+3. `Final reflection weight x10`
+4. `Final composite`
+
+Interpretation:
+
+- diffuse-only legacy building/wall pixels should be white in the fallback mask;
+- explicit legacy specular and PBR should remain black in that mask;
+- fallback surfaces should show a subtle nonzero SSR contribution where the ray tracer has valid hits;
+- if the final composite looks wet/plastic, lower or reshape the fallback rather than touching the proven explicit legacy/PBR paths;
+- if the fallback mask is unexpectedly absent on known diffuse-only legacy geometry, investigate the raw classic-shiny/env signal threshold before changing reflection strength.
 
 ## Material interpretation retained from upstream audit
 
@@ -123,8 +147,6 @@ At those revisions:
 - PBR interprets `specularRect.rgb` as ORM and derives specular response from ORM plus base color;
 - the normal-buffer PBR flag selects the interpretation.
 
-The current test object has been runtime-confirmed as legacy/cyan.
-
 ## Source/recovery bookkeeping
 
 Original recovered v0.10 source commit: `dd7022c80e0acf89295b11bda00ee788ae10d166`.
@@ -136,8 +158,9 @@ Recovery artifacts:
 - local v0.11 package SHA-256 `88562a49861abbb93ab3782b4e95ab6ac8b7dd9a22b401cb6bf9038900c77345`
 - local v0.12 package SHA-256 `de71cbc0ada1faf2e6e4b6ee71619e04137cfeb28463dcb0ef3bd74768d2def0`
 - local v0.13 package SHA-256 `7c293097aec6cf6dcd46eb3e49613f195d898a3321d4317a594f65b94917e5a4`
+- local v0.14 package SHA-256 `166e6b089a52523a84970dfc21e2071c6105d3d78677b5012c4fd3aec591727c`
 
-v0.11, v0.12, and v0.13 source deltas are committed under `history/ssr/`. Local ZIPs are not to be described as remotely byte-verified unless separately uploaded and checksum-verified.
+v0.11 through v0.14 source deltas are committed under `history/ssr/`. Local ZIPs are not remotely byte-verified unless separately uploaded and checksum-verified.
 
 ## Runtime-development rules
 
