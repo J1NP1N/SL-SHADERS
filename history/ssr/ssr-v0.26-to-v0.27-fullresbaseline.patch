@@ -1,0 +1,54 @@
+--- v0.26/SL_SSR_v0_1_LegacyFirst.fx
++++ v0.27/SL_SSR_v0_1_LegacyFirst.fx
+@@ -1,7 +1,7 @@
+-// SL_SSR_v0_26_OriginBiasAudit.fx
++// SL_SSR_v0_27_FullResBaseline.fx
+ // Firestorm-native-data screen-space reflections for ReShade.
+ //
+-// v0.26 lineage / current goals:
++// v0.27 lineage / current goals:
+ //   - legacy SL materials first
+ //   - exact Firestorm SL_DEPTH + SL_NORMALS
+ //   - exact Firestorm projection/inverse projection from SLProbeLighting
+@@ -23,6 +23,7 @@
+ //   - classify BLUE/no-hit rays by the depth samples they actually observed
+ //   - classify mixed-sign no-hit rays by actual crossing-candidate path
+ //   - decouple ray-origin self-intersection bias from Hit Thickness
++//   - diagnostic full-resolution receiver tracing to measure half-resolution silhouette loss
+ //   - recover terminal oversized candidates that converge onto a tight foreground silhouette edge
+ //   - diagnose which silhouette-edge acceptance gate rejects remaining target candidates
+ //   - deepen binary refinement so valid silhouette crossings are not misclassified oversized
+@@ -100,7 +101,7 @@
+ uniform int SSRTraceSteps
+ <
+     ui_label = "Trace Steps";
+-    ui_tooltip = "Maximum forward ray-march steps. The pass runs at half resolution.";
++    ui_tooltip = "Maximum forward ray-march steps. v0.27 diagnostic runs the trace target at full resolution and is intentionally expensive.";
+     ui_type = "slider";
+     ui_min = 6; ui_max = SL_SSR_MAX_STEPS;
+ > = 40;
+@@ -411,8 +412,8 @@
+ 
+ texture SLSSRRawTex
+ {
+-    Width = BUFFER_WIDTH / 2;
+-    Height = BUFFER_HEIGHT / 2;
++    Width = BUFFER_WIDTH;
++    Height = BUFFER_HEIGHT;
+     Format = RGBA16F;
+ };
+ 
+@@ -1567,10 +1568,10 @@
+     return color;
+ }
+ 
+-technique SL_SSR_v0_26_OriginBiasAudit
++technique SL_SSR_v0_27_FullResBaseline
+ <
+-    ui_label = "SL SSR v0.26 - Origin Bias Audit";
+-    ui_tooltip = "v0.26 preserves the v0.25 diagnostics but decouples ray-origin self-intersection bias from Hit Thickness. Use 0.010 as the corrected baseline and 0.135 to reproduce the old effective bias at Hit Thickness 0.18.";
++    ui_label = "SL SSR v0.27 - Full-Res Baseline";
++    ui_tooltip = "Diagnostic v0.27 keeps the corrected independent Ray Origin Bias and runs one receiver ray per full-resolution pixel. This measures how much of the avatar-silhouette hole is caused by the existing half-resolution trace target.";
+ >
+ {
+     pass Trace
