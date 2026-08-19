@@ -1,0 +1,422 @@
+diff -ruN v11/SL_SSR_v0_11_MainPassConsume/README.txt v12/SL_SSR_v0_12_ReShadePublish/README.txt
+--- v11/SL_SSR_v0_11_MainPassConsume/README.txt	2026-08-19 02:10:33.000000000 +0000
++++ v12/SL_SSR_v0_12_ReShadePublish/README.txt	2026-08-19 02:20:15.000000000 +0000
+@@ -1,40 +1,47 @@
+-SL_SSR_v0_11_MainPassConsume   (SLProbeLighting v1.6.9)
++SL_SSR_v0_12_ReShadePublish   (SLProbeLighting v1.6.10)
+ 
+ Why this build exists
+ ---------------------
+-v0.10 MainPassGate proved the source and copy path:
+-  - full-resolution main-pass specularRect selected (3840 x 2027 in the proven run)
+-  - clean RGBA8 read
+-  - nonzero center RGB
+-  - private snapshot matched source
+-
+-That closed acquisition. But v0.10 still published SL_GBUFFER_SPECULAR by preferring
+-current/last live specular capture before the proven snapshot. The live capture is
+-still selected by the older probe-candidate logic, where refmapCount alone cannot
+-separate the 512x512 probe-space pass from the full-resolution main pass.
++v0.10 proved the full-resolution Firestorm main-pass specularRect and its private
++snapshot contain real material bytes. v0.11 then made that gated snapshot the
++selected SL_GBUFFER_SPECULAR source, but the FX diagnostic still sampled black
++while the overlay reported the semantic bound.
++
++That isolates the failure to publication/consumption, not acquisition:
++  - source proof is nonzero
++  - snapshot proof is nonzero and matches source
++  - v0.11 source mode is GATED MAIN-PASS SNAPSHOT
++  - FX G-buffer specular RGB is black
+ 
+ What changed
+ ------------
+-Only the consumer/source priority changes:
+-  1. GATED MAIN-PASS SNAPSHOT is now authoritative for SL_GBUFFER_SPECULAR.
+-  2. DIRECT current/last Firestorm attachment is fallback only.
+-  3. The overlay exposes the actual FX source near the existing snapshot line.
+-
+-The SSR weighting algorithm is intentionally NOT changed in this build. This keeps
+-v0.11 a single proof: does the FX consume the same main-pass material payload that
+-v0.10 already proved numerically?
++The gated snapshot is no longer borrowed directly as a ReShade semantic texture.
++Instead the native bridge renders/copies all four channels into a ReShade-owned
++RGBA16F target, exactly like the already-working SL_SCENE_LINEAR publication path,
++and binds that owned view as SL_GBUFFER_SPECULAR.
++
++Preserved channels:
++  legacy: RGB specular color + A glossiness
++  PBR:    RGB occlusion / roughness / metallic
++
++SSR weighting is STILL unchanged. This remains a publication proof only.
+ 
+ Install
+ -------
+ Native add-on package. Close Firestorm, then run SL_InstallLatest.ps1.
+ Confirm the overlay title reads:
+-  SL Probe Lighting v1.6.9 ... (v0.11 MainPassConsume)
++  SL Probe Lighting v1.6.10 ... (v0.12 ReShadePublish)
+ 
+ Report
+ ------
+-One overlay screenshot plus one FX diagnostic screenshot:
+-  - overlay must say: SL_GBUFFER_SPECULAR FX source: GATED MAIN-PASS SNAPSHOT
+-  - Display Mode -> G-buffer specular RGB on the same known test object
++One overlay screenshot plus Display Mode -> G-buffer specular RGB.
++Expected overlay:
++  SL_GBUFFER_SPECULAR input source: GATED MAIN-PASS SNAPSHOT
++  SL_GBUFFER_SPECULAR FX publication: RESHADE-OWNED COPY
++  SL_GBUFFER_SPECULAR semantic bound: YES
++
++Expected FX diagnostic:
++  G-buffer specular RGB is visibly non-black on the known test object.
+ 
+-Do not re-run source acquisition troubleshooting unless the overlay falls back to
+-DIRECT or NONE. v0.10 source proof remains authoritative.
++The Analyze button remains manual source-proof instrumentation. Pressing it is not
++required for the semantic to update and does not cause FX publication.
+diff -ruN v11/SL_SSR_v0_11_MainPassConsume/RUN_AND_INTERPRET.txt v12/SL_SSR_v0_12_ReShadePublish/RUN_AND_INTERPRET.txt
+--- v11/SL_SSR_v0_11_MainPassConsume/RUN_AND_INTERPRET.txt	2026-08-19 02:10:33.000000000 +0000
++++ v12/SL_SSR_v0_12_ReShadePublish/RUN_AND_INTERPRET.txt	2026-08-19 02:20:15.000000000 +0000
+@@ -1,34 +1,25 @@
+-SL SSR v0.11 MainPassConsume -- interpret
+-=========================================
++SL SSR v0.12 ReShadePublish -- interpret
++========================================
+ 
+ Purpose
+ -------
+-Prove downstream consumption, not acquisition.
++Prove ReShade can sample the already-proven main-pass material payload.
+ 
+ Expected overlay
+ ----------------
+-  SL_GBUFFER_SPECULAR FX source: GATED MAIN-PASS SNAPSHOT
++  SL_GBUFFER_SPECULAR input source: GATED MAIN-PASS SNAPSHOT
++  SL_GBUFFER_SPECULAR FX publication: RESHADE-OWNED COPY
++  SL_GBUFFER_SPECULAR semantic bound: YES
+ 
+-If it says GATED MAIN-PASS SNAPSHOT:
+-  The FX semantic is consuming the source whose bytes v0.10 already proved.
+-  Then inspect Display Mode -> G-buffer specular RGB on the same object.
+-
+-If it says DIRECT FALLBACK (UNGATED):
+-  Snapshot timing/publication missed begin_effects. Do not tune SSR. Fix the
+-  snapshot publication lifetime first.
+-
+-If it says NONE:
+-  Semantic publication failed. Do not tune SSR.
+-
+-Expected FX diagnostic
+-----------------------
+-Display Mode -> G-buffer specular RGB should visibly contain the material payload
+-on the known specular test object rather than an empty/black 512x512 probe payload.
+-
+-After this passes
+------------------
+-Move to legacy SSR response/weighting. The current v0.8-era FX still gates legacy
+-reflection through specularRect.a glossiness; Firestorm's pinned native SSR post
+-shader instead multiplies reflected RGB by legacy specularRect.rgb directly. That
+-known algorithm mismatch is deliberately left for the next revision so this test
+-has one variable.
++Expected FX view
++----------------
++Display Mode -> G-buffer specular RGB should show the material payload rather than
++black. Do not press Analyze unless source-proof numbers are specifically needed;
++Analyze is a manual CPU diagnostic and is independent of FX publication.
++
++Interpretation
++--------------
++Non-black RGB = publication fixed. Then move to material class and legacy/PBR SSR
++response weighting.
++Black RGB with RESHADE-OWNED COPY + semantic YES = publication target itself must
++be numerically inspected before any SSR weighting change.
+diff -ruN v11/SL_SSR_v0_11_MainPassConsume/SLProbeLighting.cpp v12/SL_SSR_v0_12_ReShadePublish/SLProbeLighting.cpp
+--- v11/SL_SSR_v0_11_MainPassConsume/SLProbeLighting.cpp	2026-08-19 02:10:33.000000000 +0000
++++ v12/SL_SSR_v0_12_ReShadePublish/SLProbeLighting.cpp	2026-08-19 02:20:42.000000000 +0000
+@@ -677,6 +677,12 @@
+         api::resource scene_linear_resource = { 0 };
+         api::resource_view scene_linear_view = { 0 };
+ 
++        // ReShade-owned copy of the proven Firestorm main-pass specularRect.
++        // Native/private GL textures can be read correctly by the add-on yet
++        // still sample black when borrowed directly through a semantic view.
++        api::resource specular_resource = { 0 };
++        api::resource_view specular_view = { 0 };
++
+         api::resource_desc desc = {};
+ 
+         GLuint fbo = 0;
+@@ -695,6 +701,7 @@
+         bool diffuse_ibl_semantic_bound = false;
+         bool diffuse_response_semantic_bound = false;
+         bool scene_linear_semantic_bound = false;
++        bool specular_semantic_bound = false;
+         bool rendered_last_pass = false;
+ 
+         uint64_t render_count = 0;
+@@ -3637,6 +3644,13 @@
+         diagnosticColor = diffuseResponse;
+     else if (sl_output_mode == 5)
+         diagnosticColor = texture(sceneLinearSource, vUV).rgb;
++    else if (sl_output_mode == 6)
++    {
++        // Preserve all four material channels exactly for downstream FX.
++        // Legacy needs RGB specular + A glossiness; PBR uses RGB as ORM.
++        fragColor = texture(specularRect, vUV);
++        return;
++    }
+ 
+     fragColor =
+         vec4(
+@@ -4270,12 +4284,18 @@
+             api::resource_view { 0 },
+             api::resource_view { 0 });
+ 
++        runtime->update_texture_bindings(
++            "SL_GBUFFER_SPECULAR",
++            api::resource_view { 0 },
++            api::resource_view { 0 });
++
+         output.semantic_bound = false;
+         output.ambient_semantic_bound = false;
+         output.probe_semantic_bound = false;
+         output.diffuse_ibl_semantic_bound = false;
+         output.diffuse_response_semantic_bound = false;
+         output.scene_linear_semantic_bound = false;
++        output.specular_semantic_bound = false;
+         output.rendered_last_pass = false;
+     }
+ 
+@@ -4332,6 +4352,13 @@
+             output.scene_linear_view = { 0 };
+         }
+ 
++        if (output.specular_view != 0)
++        {
++            device->destroy_resource_view(
++                output.specular_view);
++            output.specular_view = { 0 };
++        }
++
+         if (output.ambient_resource != 0)
+         {
+             device->destroy_resource(
+@@ -4367,6 +4394,13 @@
+             output.scene_linear_resource = { 0 };
+         }
+ 
++        if (output.specular_resource != 0)
++        {
++            device->destroy_resource(
++                output.specular_resource);
++            output.specular_resource = { 0 };
++        }
++
+         if (output.resource != 0)
+         {
+             device->destroy_resource(
+@@ -5078,6 +5112,7 @@
+             output.diffuse_ibl_resource != 0 &&
+             output.diffuse_response_resource != 0 &&
+             output.scene_linear_resource != 0 &&
++            output.specular_resource != 0 &&
+             output.width == width &&
+             output.height == height)
+             return true;
+@@ -5122,6 +5157,9 @@
+         destroy_target(
+             output.scene_linear_resource,
+             output.scene_linear_view);
++        destroy_target(
++            output.specular_resource,
++            output.specular_view);
+ 
+         api::resource_desc desc(
+             width,
+@@ -5213,6 +5251,15 @@
+                 output.scene_linear_view))
+             return false;
+ 
++        if (!create_native_target(
++                runtime,
++                desc,
++                "SL Firestorm published G-buffer specular",
++                "SL_GBUFFER_SPECULAR published view",
++                output.specular_resource,
++                output.specular_view))
++            return false;
++
+         output.desc = desc;
+         output.width = width;
+         output.height = height;
+@@ -5717,6 +5764,20 @@
+                     5)
+                 : false;
+ 
++        const bool specular_source_valid =
++            capture.specular.texture_bound &&
++            capture.specular.desc_valid &&
++            capture.specular.texture != 0 &&
++            capture.specular.desc.texture.width == width &&
++            capture.specular.desc.texture.height == height;
++
++        const bool specular_publish_ok =
++            specular_source_valid
++                ? render_target(
++                    output.specular_resource,
++                    6)
++                : false;
++
+         const GLenum error =
+             (mixed_ok &&
+              ambient_ok &&
+@@ -5835,12 +5896,26 @@
+                 ? output.scene_linear_view
+                 : api::resource_view { 0 });
+ 
++        // v1.6.10 / SSR v0.12 ReShadePublish:
++        // Publish a ReShade-owned render target, not a borrowed native/private
++        // OpenGL texture view. v0.11 proved that the borrowed view could report
++        // bound while the FX still sampled black.
++        runtime->update_texture_bindings(
++            "SL_GBUFFER_SPECULAR",
++            specular_publish_ok
++                ? output.specular_view
++                : api::resource_view { 0 },
++            specular_publish_ok
++                ? output.specular_view
++                : api::resource_view { 0 });
++
+         output.semantic_bound = true;
+         output.ambient_semantic_bound = true;
+         output.probe_semantic_bound = true;
+         output.diffuse_ibl_semantic_bound = true;
+         output.diffuse_response_semantic_bound = true;
+         output.scene_linear_semantic_bound = scene_linear_ok;
++        output.specular_semantic_bound = specular_publish_ok;
+         output.rendered_last_pass = true;
+         output.render_count++;
+ 
+@@ -6014,7 +6089,7 @@
+ 
+             reshade::log::message(
+                 reshade::log::level::info,
+-                "SL Probe Lighting v1.6.9: Firestorm compatibility DEPTH + main-pass-consume G-buffer bridge initialized (v0.11 MainPassConsume).");
++                "SL Probe Lighting v1.6.10: Firestorm compatibility DEPTH + ReShade-published G-buffer bridge initialized (v0.12 ReShadePublish).");
+         }
+     }
+ 
+@@ -6321,7 +6396,7 @@
+             snapshot_specular.desc_valid &&
+             snapshot_specular.texture != 0;
+ 
+-        // v1.6.9 / SSR v0.11 MainPassConsume:
++        // v1.6.10 / SSR v0.12 ReShadePublish:
+         // v0.10 proved that the gated private snapshot is an exact copy of the
+         // full-resolution main-pass specularRect. Make that proven source
+         // authoritative for SL_GBUFFER_SPECULAR. The live current/last capture
+@@ -6393,12 +6468,11 @@
+                 runtime_data->output);
+         }
+ 
++        // v0.12: render_native_irradiance() publishes capture.specular through
++        // output.specular_view, a ReShade-owned texture. Do not re-bind the
++        // private/native GL texture here; that was the v0.11 failure mode.
+         const bool specular_bound =
+-            bind_borrowed_texture(
+-                runtime,
+-                runtime_data->specular_binding,
+-                capture.specular,
+-                "SL_GBUFFER_SPECULAR");
++            runtime_data->output.specular_semantic_bound;
+ 
+         const float specular_valid =
+             specular_bound ? 1.0f : 0.0f;
+@@ -6703,7 +6777,7 @@
+             runtime_data->lifecycle;
+ 
+         ImGui::TextUnformatted(
+-            "SL Probe Lighting v1.6.9 - DEPTH / temporal / main-pass-consume G-buffer bridge (v0.11 MainPassConsume)");
++            "SL Probe Lighting v1.6.10 - DEPTH / temporal / ReShade-published G-buffer bridge (v0.12 ReShadePublish)");
+         ImGui::Separator();
+ 
+         const depth_compat_output &depth_compat =
+@@ -6802,13 +6876,19 @@
+                 specular_snapshot_count));
+ 
+         ImGui::Text(
+-            "SL_GBUFFER_SPECULAR FX source: %s",
++            "SL_GBUFFER_SPECULAR input source: %s",
+             runtime_data->specular_source_mode == 2
+                 ? "GATED MAIN-PASS SNAPSHOT"
+                 : (runtime_data->specular_source_mode == 1
+                     ? "DIRECT FALLBACK (UNGATED)"
+                     : "NONE"));
+ 
++        ImGui::Text(
++            "SL_GBUFFER_SPECULAR FX publication: %s",
++            runtime_data->output.specular_semantic_bound
++                ? "RESHADE-OWNED COPY"
++                : "not ready");
++
+         if (ImGui::Button("Analyze SL_GBUFFER_SPECULAR now"))
+         {
+             std::lock_guard<std::mutex> lock(
+@@ -7105,7 +7185,7 @@
+             output.scene_linear_semantic_bound ? "YES" : "no");
+ 
+         ImGui::Text(
+-            "SL_GBUFFER_SPECULAR source: %s",
++            "SL_GBUFFER_SPECULAR input source: %s",
+             runtime_data->specular_source_mode == 1
+                 ? "DIRECT fallback (ungated)"
+                 : (runtime_data->specular_source_mode == 2
+@@ -7114,7 +7194,13 @@
+ 
+         ImGui::Text(
+             "SL_GBUFFER_SPECULAR semantic bound: %s",
+-            runtime_data->specular_binding.semantic_bound ? "YES" : "no");
++            output.specular_semantic_bound ? "YES" : "no");
++
++        ImGui::Text(
++            "Published specular target: tex %u, %u x %u",
++            gl_object_id(output.specular_resource),
++            output.width,
++            output.height);
+ 
+         ImGui::Text(
+             "Native renders total: %llu",
+diff -ruN v11/SL_SSR_v0_11_MainPassConsume/SL_SSR_v0_1_LegacyFirst.fx v12/SL_SSR_v0_12_ReShadePublish/SL_SSR_v0_1_LegacyFirst.fx
+--- v11/SL_SSR_v0_11_MainPassConsume/SL_SSR_v0_1_LegacyFirst.fx	2026-08-19 02:10:33.000000000 +0000
++++ v12/SL_SSR_v0_12_ReShadePublish/SL_SSR_v0_1_LegacyFirst.fx	2026-08-19 02:20:15.000000000 +0000
+@@ -1,4 +1,4 @@
+-// SL_SSR_v0_11_MainPassConsume.fx
++// SL_SSR_v0_12_ReShadePublish.fx
+ // Firestorm-native-data screen-space reflections for ReShade.
+ //
+ // v0.8 goals:
+@@ -1014,10 +1014,10 @@
+     return color;
+ }
+ 
+-technique SL_SSR_v0_11_MainPassConsume
++technique SL_SSR_v0_12_ReShadePublish
+ <
+-    ui_label = "SL SSR v0.11 - Main Pass Consume";
+-    ui_tooltip = "Publishes the v0.10-proven gated full-resolution main-pass specular snapshot to the FX; direct attachment is fallback only.";
++    ui_label = "SL SSR v0.12 - ReShade Publish";
++    ui_tooltip = "Publishes the proven main-pass specular payload through a ReShade-owned texture so the FX samples the same nonzero bytes the add-on already proved.";
+ >
+ {
+     pass Trace
+diff -ruN v11/SL_SSR_v0_11_MainPassConsume/SOURCE_AUDIT.txt v12/SL_SSR_v0_12_ReShadePublish/SOURCE_AUDIT.txt
+--- v11/SL_SSR_v0_11_MainPassConsume/SOURCE_AUDIT.txt	2026-08-19 02:10:33.000000000 +0000
++++ v12/SL_SSR_v0_12_ReShadePublish/SOURCE_AUDIT.txt	2026-08-19 02:20:16.000000000 +0000
+@@ -1,3 +1,7 @@
++v0.12 ReShadePublish note
++-------------------------
++v0.11 proved that a borrowed private/native GL texture can report semantic-bound while the FX samples black. v0.12 publishes the proven gated specular snapshot through a ReShade-owned RGBA16F render target before semantic binding. SSR weighting remains unchanged.
++
+ SL SSR v0.8 source audit
+ ========================
+ 
