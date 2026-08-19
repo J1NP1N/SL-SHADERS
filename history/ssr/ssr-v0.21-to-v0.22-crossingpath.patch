@@ -1,0 +1,145 @@
+--- v0.21/SL_SSR_v0_1_LegacyFirst.fx
++++ v0.22/SL_SSR_v0_1_LegacyFirst.fx
+@@ -1,7 +1,7 @@
+-// SL_SSR_v0_21_NoHitHistory.fx
++// SL_SSR_v0_22_CrossingPath.fx
+ // Firestorm-native-data screen-space reflections for ReShade.
+ //
+-// v0.21 lineage / current goals:
++// v0.22 lineage / current goals:
+ //   - legacy SL materials first
+ //   - exact Firestorm SL_DEPTH + SL_NORMALS
+ //   - exact Firestorm projection/inverse projection from SLProbeLighting
+@@ -21,6 +21,7 @@
+ //   - trace budget large enough to reach configured max distance at default growth
+ //   - recover background-to-geometry silhouette entries that cannot form a normal depth sign pair
+ //   - classify BLUE/no-hit rays by the depth samples they actually observed
++//   - classify mixed-sign no-hit rays by actual crossing-candidate path
+ //   - limited skip-through for oversized foreground disocclusion crossings
+ //   - diagnostic classification of every geometry-trace rejection path
+ //
+@@ -280,7 +281,8 @@
+         "Ray termination reason\0"
+         "Background-entry recovered hit mask\0"
+         "No-hit depth history\0"
+-        "No-hit closest depth delta\0";
++        "No-hit closest depth delta\0"
++        "No-hit crossing candidate path\0";
+ > = 0;
+ 
+ uniform float SSRDebugGain
+@@ -695,7 +697,8 @@
+     out float backgroundEntryUsed,
+     out float rejectReason,
+     out float noHitHistoryClass,
+-    out float minAbsDepthDelta)
++    out float minAbsDepthDelta,
++    out float crossingPathClass)
+ {
+@@ -704,6 +707,7 @@
+     backgroundEntryUsed = 0.0;
+     noHitHistoryClass = 0.0;
+     minAbsDepthDelta = 1e6;
++    crossingPathClass = 0.0;
+@@ -729,6 +733,10 @@
+     bool sawBackgroundSample = false;
+     bool sawNegativeGeometry = false;
+     bool sawNonNegativeGeometry = false;
++    bool sawPosToNegTransition = false;
++    bool sawNegToPosCandidate = false;
++    bool sawOversizedCandidate = false;
++    bool sawOtherRefineFailure = false;
+     int disocclusionSkipsUsed = 0;
+@@ -771,8 +779,12 @@
+         else
+             sawNonNegativeGeometry = true;
+ 
++        if (previousValid && !previousWasBackground && previousDelta >= 0.0 && delta < 0.0)
++            sawPosToNegTransition = true;
++
+         if (previousValid && previousDelta < 0.0 && delta >= 0.0)
+         {
++            sawNegToPosCandidate = true;
+             bool backgroundEntry = previousWasBackground;
+@@ -835,13 +847,20 @@
+                 if (confidence > 0.0)
+                 {
+                     rejectReason = 0.0;
++                    crossingPathClass = 1.0;
+                     return true;
+                 }
+ 
+                 rejectReason = 5.0;
++                crossingPathClass = 5.0;
+                 return false;
+             }
+ 
++            if (finalDepthValid && finalDelta > SSRThickness)
++                sawOversizedCandidate = true;
++            else
++                sawOtherRefineFailure = true;
++
+@@ -883,6 +902,15 @@
+             noHitHistoryClass = 3.0;
+         else
+             noHitHistoryClass = 4.0;
++
++        if (sawNegToPosCandidate && sawOversizedCandidate)
++            crossingPathClass = 3.0;
++        else if (sawNegToPosCandidate && sawOtherRefineFailure)
++            crossingPathClass = 4.0;
++        else if (!sawNegToPosCandidate && sawPosToNegTransition)
++            crossingPathClass = 2.0;
++        else if (sawNegativeGeometry && sawNonNegativeGeometry)
++            crossingPathClass = 6.0;
+     }
+@@ -925,6 +953,23 @@
+     return float3(0.5, 0.0, 1.0);
+ }
++
++float3 CrossingPathColor(float crossingClass, bool accepted, float rejectReason)
++{
++    if (accepted)
++        return 1.0.xxx;
++    if (!(rejectReason > 2.5 && rejectReason < 3.5))
++        return TraceRejectReasonColor(rejectReason, false);
++    if (crossingClass > 1.5 && crossingClass < 2.5)
++        return float3(0.0, 1.0, 1.0);
++    if (crossingClass > 2.5 && crossingClass < 3.5)
++        return float3(1.0, 0.5, 0.0);
++    if (crossingClass > 3.5 && crossingClass < 4.5)
++        return float3(1.0, 1.0, 0.0);
++    if (crossingClass > 5.5 && crossingClass < 6.5)
++        return float3(0.5, 0.0, 1.0);
++    return float3(0.0, 0.25, 1.0);
++}
+@@ -1082,7 +1127,7 @@
+-    const bool geometryDebug = (SSRDisplayMode == 2 || SSRDisplayMode == 11 || SSRDisplayMode == 22 || SSRDisplayMode == 23 || SSRDisplayMode == 24 || SSRDisplayMode == 25 || SSRDisplayMode == 26);
++    const bool geometryDebug = (SSRDisplayMode == 2 || SSRDisplayMode == 11 || SSRDisplayMode == 22 || SSRDisplayMode == 23 || SSRDisplayMode == 24 || SSRDisplayMode == 25 || SSRDisplayMode == 26 || SSRDisplayMode == 27);
+@@ -1119,8 +1164,9 @@
+     float rejectReason;
+     float noHitHistoryClass;
+     float minAbsDepthDelta;
++    float crossingPathClass;
+ 
+-    bool traceAccepted = TraceSSR(viewPos, normal, rayDir, hitUV, hitDistance, confidence, disocclusionUsed, backgroundEntryUsed, rejectReason, noHitHistoryClass, minAbsDepthDelta);
++    bool traceAccepted = TraceSSR(viewPos, normal, rayDir, hitUV, hitDistance, confidence, disocclusionUsed, backgroundEntryUsed, rejectReason, noHitHistoryClass, minAbsDepthDelta, crossingPathClass);
+@@ -1139,6 +1185,9 @@
+         return float4(nearValue.xxx, 1.0);
+     }
++
++    if (SSRDisplayMode == 27)
++        return float4(CrossingPathColor(crossingPathClass, traceAccepted, rejectReason), 1.0);
+@@ -1183,7 +1232,7 @@
+-    if (SSRDisplayMode == 25 || SSRDisplayMode == 26)
++    if (SSRDisplayMode == 25 || SSRDisplayMode == 26 || SSRDisplayMode == 27)
+         return float4(saturate(rawSSR.rgb), 1.0);
+@@ -1358,10 +1407,10 @@
+-technique SL_SSR_v0_21_NoHitHistory
++technique SL_SSR_v0_22_CrossingPath
+ <
+-    ui_label = "SL SSR v0.21 - No-Hit History";
+-    ui_tooltip = "Diagnostic v0.21 classifies BLUE/no-hit rays by whether they sampled only background, only negative geometry, only non-negative geometry, or both depth signs. It also exposes closest sampled depth separation.";
++    ui_label = "SL SSR v0.22 - Crossing Path";
++    ui_tooltip = "Diagnostic v0.22 preserves the known-good disocclusion skip path and classifies mixed-sign no-hit rays by actual crossing-candidate behavior: positive-to-negative only, oversized/skipped negative-to-positive candidates, or other refinement failure.";
+ >
