@@ -1,5 +1,5 @@
 // SLHiZTraceLink.cpp
-// Links SL Hi-Z v0.1a private pyramid textures and the v0.35 raw SSR buffer
+// Links SL Hi-Z v0.1b private pyramid textures and the v0.35 raw SSR buffer
 // into semantics consumed by SL_HiZ_Trace_v0_1_Compare.fx.
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -7,7 +7,7 @@
 #include <reshade.hpp>
 #include <cstdint>
 
-static constexpr const char *kHiZEffect = "SL_HiZ_v0_1a_IntervalDebug.fx";
+static constexpr const char *kHiZEffect = "SL_HiZ_v0_1b_Infrastructure.fx";
 static constexpr const char *kOldSSREffect = "SL_SSR_v0_35_LegacyResolve.fx";
 static constexpr const char *kTraceEffect = "SL_HiZ_Trace_v0_1_Compare.fx";
 
