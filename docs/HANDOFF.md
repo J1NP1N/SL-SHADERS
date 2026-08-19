@@ -6,9 +6,11 @@ This is the live project checkpoint. Update it whenever the active build, proven
 
 ## Current focus
 
-**Opaque legacy/PBR SSR plumbing is proven through material response. The active problem is locating Firestorm's forward-rendered PBR alpha-blend path so glass can be handled separately.**
+**Opaque SSR plumbing and material response are proven. Glass-path work is temporarily parked while the active test fixes a final-composite artifact: Firestorm's cast shadow remains visibly underneath strong SSR because the current composite only adds reflection on top of the already-shadowed receiver.**
 
-Current test build: **SLProbeLighting v1.6.11 / SSR v0.15 PBRAlphaProbe — PENDING RUNTIME**.
+Installed/current native bridge may remain **SLProbeLighting v1.6.11 / v0.15 PBRAlphaProbe**.
+
+Current FX test: **SSR v0.16 EnergyComposite — PENDING RUNTIME**.
 
 Runtime status:
 
@@ -17,118 +19,114 @@ Runtime status:
 - v0.12 ReShadePublish: **PASS** — ReShade-owned RGBA16F publication fixed material-buffer sampling.
 - material class / bridge diagnostics: **legacy-cyan classification and healthy bridge confirmed** on the known test scene.
 - v0.13 LegacyRGBResponse: **PASS** — legacy `specularRect.rgb` reaches SSR even when legacy alpha/glossiness is zero.
-- v0.14 LegacyDielectricFallback: **CONCEPT PASS** — diffuse-only legacy surfaces can receive a conservative no-spec fallback; user reports the result looks decent but somewhat weak. Strength tuning is not finalized.
-- v0.15 PBRAlphaProbe: **PENDING** — diagnostic-only native/FX revision to spatially identify PBR alpha-blended forward rendering. It does not add glass SSR yet.
+- v0.14 LegacyDielectricFallback: **CONCEPT PASS** — diffuse-only legacy surfaces can receive SSR without authored specular maps; user reports it looks decent but somewhat weak. Strength tuning remains open.
+- v0.15 PBRAlphaProbe: **PENDING / PARKED** — native diagnostic for PBR alpha-blended forward rendering; no glass SSR yet.
+- v0.16 EnergyComposite: **PENDING** — replaces receiver/base energy proportionally under valid SSR instead of only adding reflection on top.
 
 ## Proven facts
 
 - Compatibility DEPTH, Firestorm projection data, scene-linear color, SSR ray-hit geometry, and raw reflected hit color work.
-- `Raw hit color` sees ordinary scene geometry regardless of whether the receiving surface has an authored specular map.
-- Firestorm's authoritative opaque main-pass material buffer can be identified, copied, republished into a ReShade-owned texture, and sampled by the FX.
+- `Raw hit color` sees ordinary scene geometry regardless of whether the receiver has an authored specular map.
+- Firestorm's opaque main-pass material buffer can be identified, copied, republished into a ReShade-owned texture, and sampled by the FX.
 - Opaque material classification via the normal-buffer PBR flag works.
-- Legacy explicit specular RGB now drives SSR correctly; legacy alpha/glossiness no longer acts as an incorrect hard energy gate.
-- Legacy surfaces with neither explicit specular RGB nor classic-shiny/env signal can receive a small neutral dielectric fallback without requiring a specular map.
-- The apparent speckled ground response seen in diagnostics was identified by the user as the expected PBR sand material, not by itself a ray-stability defect.
+- Legacy explicit specular RGB drives SSR correctly; legacy alpha/glossiness is no longer an incorrect hard energy gate.
+- Legacy surfaces with neither explicit specular RGB nor classic-shiny/env signal can receive a small neutral dielectric fallback.
+- The speckled floor response seen earlier is expected PBR sand material structure, not by itself a ray-stability defect.
 
-## Why glass is separate
+## v0.16 problem and design
 
-Pinned Firestorm source shows transparency is forward-rendered after deferred rendering. PBR alpha rendering still has access to base color/alpha, normal, ORM, metallic factor, and roughness factor, but those pixels are not represented by the opaque `specularRect` contract in the same way.
+The supplied glossy-floor screenshot shows the avatar reflection correctly, but Firestorm's dark cast shadow remains visible beneath/through it.
 
-Do not identify glass by material inventory name. The render-side `LLGLTFMaterial` does not provide an inventory-style name to the ReShade/OpenGL add-on, and the add-on does not currently receive SL asset UUIDs as texture labels.
+This is consistent with the current final composite:
 
-Do not require low metallic to classify glass. The known test glass uses a magenta ORM texture and factor 1.0, giving approximately AO=1 / roughness=0 / metallic=1 while still visually functioning as transparent glass.
+`scene + reflected contribution`
 
-## Known glass fixture
+The receiver's original diffuse/shadowed scene color is never reduced. Strong SSR therefore looks partially transparent over the cast shadow.
 
-See `history/ssr/SSR_v0.15_PBRAlphaProbe_FIXTURE.md`.
+v0.16 keeps ray tracing and material response unchanged and changes only the final composition:
 
-Editor state supplied by the user:
+`compositeLinear = sceneLinear * (1 - baseRemoval) + reflectionLinear`
 
-- PBR material
-- Alpha mode `Blend`
-- base alpha `0.500`
-- metallic factor `1.000`
-- roughness factor `1.000`
-- magenta ORM texture, approximately AO=1 / roughness=0 / metallic=1
+where:
 
-Texture asset UUID fingerprints:
+- `reflectionLinear` is the same reflected term already proven in v0.13/v0.14;
+- `appliedWeight` is the actual material-weighted reflection energy;
+- `baseRemoval = saturate(appliedWeight * Reflection Base Replacement)`;
+- PBR uses the existing scalar material weight;
+- legacy base removal also accounts for the magnitude of the legacy RGB reflectance, so weak/tinted legacy specular does not erase too much receiver color.
 
-- Base color: `2fe6eb37-163d-7bea-7163-a2c5e805e8ac`
-- ORM: `ae33719a-14d1-d228-2ad1-70adddebe890`
-- Normal: `4ed76883-9057-3be5-c18e-1b878bf9dd88`
+New control:
 
-These UUIDs are validation data only, not the production detector.
+`Reflection Base Replacement`
 
-## v0.15 PBRAlphaProbe design
+- `0.0` = old additive composite;
+- `1.0` = full energy-style replacement, default for the first test.
 
-This revision preserves the proven v0.14 FX material response and changes the native bridge to detect Firestorm PBR-alpha draw state using:
+New diagnostic:
 
-- alpha blending enabled with `SRC_ALPHA / ONE_MINUS_SRC_ALPHA`;
-- PBR sampler signature: `diffuseMap`, `bumpMap`, `specularMap`, `emissiveMap`;
-- PBR factors: `metallicFactor`, `roughnessFactor`;
-- valid current scene color attachment.
+`Display Mode -> Reflection base removal x10`
 
-For the **first contiguous PBR-alpha segment** in the frame, the add-on snapshots the scene target immediately before and after that segment. It publishes the absolute scene-color difference as a ReShade-owned semantic:
+The tone-map path preserves the existing Firestorm-presentation handling. If captured tonemap state is unavailable, v0.16 applies the signed linear replacement delta through the existing scene-to-presentation scale fallback.
 
-`SL_PBR_ALPHA_MASK`
-
-FX display mode:
-
-`PBR alpha-blend path probe mask`
-
-White means the captured PBR-alpha segment changed that screen pixel. Black means no detected change in that segment.
-
-Important: this is a render-path probe, not yet a glass classifier. Other PBR alpha content may also appear white. If the glass is not in the first captured segment but another PBR-alpha object is, the next revision should accumulate/select segments rather than conclude the path is wrong.
-
-Overlay diagnostics added:
-
-- `PBR alpha draws last frame: ... program ...`
-- `PBR alpha samplers: base ..., ORM ..., normal ...`
-- `PBR alpha factors: metallic ..., roughness ...`
-- `PBR alpha snapshots: ..., mask semantic bound: YES/no`
-
-## v0.15 source bookkeeping
-
-Validated source deltas are committed under `history/ssr/`:
-
-- native part 1 commit: `19ef8ffbc5ad7b340eaed5512631411504c2a67b`
-- native part 2a commit: `3883a5df0e410249b2203312e92299c64f932caf`
-- native part 2b commit: `8649c5a291b7bda08d65d743fca799dc101c4e82`
-- native CMake/version commit: `fd7e1299d63526bc464261ea7c9703803804678f`
-- FX delta commit: `3ad7bc9bd706f2b4d1b4228ab24c49e2cbcfc6d7`
-- fixture record commit: `20a3fde2d19b89c53e8abbb8dad138f4a0d3d014`
-
-The native split patches were validated sequentially against the recovered v0.12 source and reconstruct the final v0.15 `SLProbeLighting.cpp` byte-for-byte.
+Source delta commit: `4658fb3d6baeeedd7e56cb76c5a3d031b4372c24`.
 
 Local package:
 
-- `SL_SSR_v0_15_PBRAlphaProbe.zip`
-- SHA-256 `d050833e72b2c6f1119619e41434e4311368f6a8cdae18d802acae5d188559bc`
+- `SL_SSR_v0_16_EnergyComposite.zip`
+- SHA-256 `55302308e8f0a929b315a99cea6d260c7639dd5e8614a30523ebce538f893b03`
 
-Do not describe the ZIP as remotely byte-verified unless separately uploaded and checksum-verified.
+FX-only package. Do not describe it as remotely byte-verified unless separately uploaded and checksum-verified.
 
 ## Next runtime test
 
-v0.15 contains a native add-on change, so **close Firestorm before installing**.
+Firestorm may remain open because v0.16 is FX-only. Keep the v0.15 native bridge installed if already present.
 
-Confirm visible versions:
+Confirm ReShade technique:
 
-- native overlay: `SL Probe Lighting v1.6.11 ... (v0.15 PBRAlphaProbe)`
-- ReShade technique: `SL SSR v0.15 - PBR Alpha Probe`
+`SL SSR v0.16 - Energy Composite`
 
-Use the known glass fixture in view. Do not press Analyze.
+Use the same glossy floor / avatar view that showed the dark shadow ghost.
+
+First run with:
+
+`Reflection Base Replacement = 1.00`
 
 Return:
 
-1. native overlay showing the four PBR-alpha diagnostics above;
-2. `Display Mode -> PBR alpha-blend path probe mask`.
+1. `Display Mode -> Final composite`
+2. `Display Mode -> Reflection base removal x10`
 
-Interpretation:
+PASS criteria:
 
-- `PBR alpha draws > 0`, snapshots increasing, semantic `YES`, and glass pane white: **forward PBR-alpha path found**. Next revision can capture the glass receiver's actual alpha/normal/material state and begin SSR integration.
-- draws > 0 and semantic `YES`, but mask only shows another transparent PBR object: first-segment selection is too narrow; accumulate/select multiple PBR-alpha segments next.
-- draws > 0 but mask black: inspect before/after capture timing or delta threshold before touching SSR.
-- draws = 0: relax/inspect the PBR-alpha program signature or blend-state assumptions; do not change the proven opaque SSR path.
+- avatar reflection remains visible;
+- the dark cast-shadow ghost under the reflected avatar is substantially reduced;
+- non-reflective areas are not globally washed out or replaced.
+
+If receiver detail disappears too aggressively, test `0.75`, then `0.50`; do not change ray tracing or material response during this test.
+
+## Glass work — parked checkpoint
+
+Pinned Firestorm source shows transparency is forward-rendered after deferred rendering. PBR alpha rendering still has base color/alpha, normal, ORM, metallic factor, and roughness factor available.
+
+Known test glass fixture:
+
+- PBR, Alpha Mode `Blend`, base alpha `0.500`;
+- metallic factor `1.000`, roughness factor `1.000`;
+- magenta ORM approximately AO=1 / roughness=0 / metallic=1;
+- Base color UUID `2fe6eb37-163d-7bea-7163-a2c5e805e8ac`;
+- ORM UUID `ae33719a-14d1-d228-2ad1-70adddebe890`;
+- Normal UUID `4ed76883-9057-3be5-c18e-1b878bf9dd88`.
+
+The UUIDs are validation fingerprints only, not the production detector. v0.15 detects PBR alpha blend from renderer state and publishes `SL_PBR_ALPHA_MASK`. Resume that work after v0.16 composite behavior is settled.
+
+v0.15 source bookkeeping:
+
+- native part 1 `19ef8ffbc5ad7b340eaed5512631411504c2a67b`
+- native part 2a `3883a5df0e410249b2203312e92299c64f932caf`
+- native part 2b `8649c5a291b7bda08d65d743fca799dc101c4e82`
+- native CMake/version `fd7e1299d63526bc464261ea7c9703803804678f`
+- FX delta `3ad7bc9bd706f2b4d1b4228ab24c49e2cbcfc6d7`
+- fixture record `20a3fde2d19b89c53e8abbb8dad138f4a0d3d014`
 
 ## Earlier source checkpoints
 
