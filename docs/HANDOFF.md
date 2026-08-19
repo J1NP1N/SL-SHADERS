@@ -6,17 +6,17 @@ This is the live project checkpoint. Update it whenever the active build, proven
 
 ## Current focus
 
-**Firestorm `specularRect` acquisition is proven. The active problem is ReShade-side publication/consumption of those proven bytes.**
+**Firestorm `specularRect` acquisition and ReShade-side publication are both proven. The immediate next step is material-class interpretation before SSR weighting resumes.**
 
-Current test build: **SLProbeLighting v1.6.10 / SSR v0.12 ReShadePublish**.
+Current proven build: **SLProbeLighting v1.6.10 / SSR v0.12 ReShadePublish**.
 
 Runtime status:
 
 - v0.10 MainPassGate: **PASS** — authoritative full-resolution main-pass `specularRect` capture and private snapshot copy proven.
 - v0.11 MainPassConsume: **FAIL, but informative** — the gated main-pass snapshot was selected as the FX source, while `Display Mode -> G-buffer specular RGB` still sampled black.
-- v0.12 ReShadePublish: **PENDING RUNTIME** — publishes the proven snapshot through a ReShade-owned RGBA16F target instead of borrowing the private/native GL texture directly.
+- v0.12 ReShadePublish: **PASS** — publishing the captured material payload through a ReShade-owned RGBA16F target made `G-buffer specular RGB` visibly non-black in the FX.
 
-Do **not** resume SSR strength/weight/roughness tuning until v0.12 proves that the FX can visibly sample the material payload.
+Do **not** resume SSR strength/weight/roughness tuning until the actual normal-buffer material-class flag is confirmed on the test object.
 
 ## What is proven at runtime
 
@@ -27,6 +27,7 @@ Do **not** resume SSR strength/weight/roughness tuning until v0.12 proves that t
 - Raw reflected hit color contains real scene color.
 - The authoritative main-pass material G-buffer can be identified and read.
 - The private main-pass specular snapshot is an accurate copy of that source.
+- **The material payload can be republished into a ReShade-owned target and sampled correctly by the FX.**
 
 The decisive v0.10 proof selected:
 
@@ -36,9 +37,17 @@ The decisive v0.10 proof selected:
 - nonzero RGB in the center block over the material test object.
 - snapshot statistics matched source statistics.
 
-The latest v0.11 runtime screenshot independently reconfirmed the same acquisition path: full-resolution `tex 8, 3840 x 2027`, clean read, nonzero source/snapshot RGB, and overlay source `GATED MAIN-PASS SNAPSHOT`.
+The v0.11 runtime screenshot independently reconfirmed the same acquisition path: full-resolution `tex 8, 3840 x 2027`, clean read, nonzero source/snapshot RGB, and overlay source `GATED MAIN-PASS SNAPSHOT`.
 
-Conclusion: **the black FX diagnostic is not an acquisition, readback, or private snapshot-copy failure.**
+The decisive v0.12 runtime screenshots showed:
+
+- `SL_GBUFFER_SPECULAR input source: GATED MAIN-PASS SNAPSHOT`
+- `SL_GBUFFER_SPECULAR FX publication: RESHADE-OWNED COPY`
+- `SL_GBUFFER_SPECULAR semantic bound: YES`
+- `Published specular target: tex 983, 3840 x 2027`
+- `Display Mode -> G-buffer specular RGB` visibly displayed scene/material variation instead of black.
+
+Conclusion: **the old black material diagnostic was a two-part plumbing problem: first wrong deferred-draw selection, then native/private GL texture interoperability with the FX. Both are now closed.**
 
 ## Root-cause chain
 
@@ -66,39 +75,39 @@ Interpretation: a borrowed private/native GL texture could report semantic-bound
 
 Source delta commit: `018a21b4bd441b53526f7dc4ee22fd7320fd76be`.
 
-### v0.12 ReShadePublish — current
+### v0.12 ReShadePublish — proven
 
-The bridge now copies all four material channels into a **ReShade-owned RGBA16F render target** and binds that owned view as `SL_GBUFFER_SPECULAR`.
+The bridge copies all four material channels into a **ReShade-owned RGBA16F render target** and binds that owned view as `SL_GBUFFER_SPECULAR`.
 
 This deliberately mirrors the ownership model already used by the working `SL_SCENE_LINEAR` publication path.
 
-Preserved material contract:
+Runtime result: `G-buffer specular RGB` became visibly populated in the FX while the overlay reported `RESHADE-OWNED COPY` and semantic-bound `YES`.
 
-- legacy: `RGB = specular color`, `A = glossiness`
-- PBR: `RGB = occlusion / roughness / metallic`
+This proves the ReShade-owned publication path and closes the v0.11 interoperability failure.
 
-SSR weighting is unchanged. This build tests publication only.
+The later manual Analyze screenshot showed zeroes from the frozen/native proof source. That does not overturn the v0.12 result: Analyze is manual CPU instrumentation against the proof source at button-press time, while the live FX diagnostic directly proved shader-visible material data in the owned publication target.
 
 Source delta commit: `eede4fd47b8284b3b7bf973c2d082da4825f153f`.
 
+Runtime-result commit: `8655e4a9214fb1febe3477f3c8287ac1181e2f62`.
+
 ## Next runtime step
 
-Run **v0.12 ReShadePublish** on the same material test scene.
+Stay on **v0.12 ReShadePublish**. No new build is required yet.
 
-Return:
+On the same known test object, return these existing Display Mode views:
 
-1. overlay screenshot showing:
-   - `SL_GBUFFER_SPECULAR input source: GATED MAIN-PASS SNAPSHOT`
-   - `SL_GBUFFER_SPECULAR FX publication: RESHADE-OWNED COPY`
-   - `SL_GBUFFER_SPECULAR semantic bound: YES`
-2. `Display Mode -> G-buffer specular RGB`
+1. `Material class: legacy cyan / PBR magenta`
+2. `Bridge status`
 
-Do **not** press Analyze unless new numeric source proof is specifically requested. Analyze is manual CPU instrumentation and is independent of FX publication.
+Do **not** press Analyze.
 
 Interpretation:
 
-- **non-black G-buffer specular RGB:** publication is fixed; move to material-class interpretation and then SSR response/weighting.
-- **black G-buffer specular RGB with RESHADE-OWNED COPY + semantic YES:** numerically inspect the ReShade-owned publication target itself before changing SSR weighting.
+- **Material class cyan:** the normal-buffer PBR flag is absent; interpret `specularRect.rgb` as legacy specular color and proceed to correct/verify legacy SSR response.
+- **Material class magenta:** the normal-buffer PBR flag is present; interpret `specularRect.rgb` as ORM and proceed through the PBR branch.
+
+Only after this branch is proven should SSR strength/weight/roughness tuning resume.
 
 ## Material interpretation retained from upstream audit
 
@@ -113,7 +122,7 @@ At those revisions, native SSR samples `specularRect` directly and branches by t
 - legacy uses `specularRect.rgb` as specular color;
 - PBR interprets RGB as ORM and derives specular response from ORM plus base color.
 
-Do not infer legacy/PBR classification from RGB shape alone. Use the actual G-buffer flag diagnostic after publication is proven.
+Do not infer legacy/PBR classification from RGB shape alone. Use the actual G-buffer flag diagnostic.
 
 ## Source/recovery bookkeeping
 
@@ -126,7 +135,7 @@ Recovery artifacts:
 - local v0.11 package SHA-256 `88562a49861abbb93ab3782b4e95ab6ac8b7dd9a22b401cb6bf9038900c77345`
 - local v0.12 package SHA-256 `de71cbc0ada1faf2e6e4b6ee71619e04137cfeb28463dcb0ef3bd74768d2def0`
 
-The v0.11 and v0.12 **source deltas are now committed to GitHub** under `history/ssr/`. Their ZIP packages should not be described as remotely byte-verified unless separately uploaded and checksum-verified.
+The v0.11 and v0.12 **source deltas are committed to GitHub** under `history/ssr/`. Their ZIP packages should not be described as remotely byte-verified unless separately uploaded and checksum-verified.
 
 ## Runtime-development rules
 
