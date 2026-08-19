@@ -1,0 +1,159 @@
+--- v0.16/SL_SSR_v0_1_LegacyFirst.fx
++++ v0.17/SL_SSR_v0_1_LegacyFirst.fx
+@@ -1,7 +1,7 @@
+-// SL_SSR_v0_15_PBRAlphaProbe.fx
++// SL_SSR_v0_17_DisocclusionSkip.fx
+ // Firestorm-native-data screen-space reflections for ReShade.
+ //
+-// v0.15 lineage / current goals:
++// v0.17 lineage / current goals:
+ //   - legacy SL materials first
+ //   - exact Firestorm SL_DEPTH + SL_NORMALS
+ //   - exact Firestorm projection/inverse projection from SLProbeLighting
+@@ -18,6 +18,7 @@
+ //   - exact SL_ALPHA_MASK receiver protection
+ //   - native PBR alpha-blend path probe published as SL_PBR_ALPHA_MASK
+ //   - half-resolution ray tracing for practical cost
++//   - limited skip-through for oversized foreground disocclusion crossings
+ //
+ // Firestorm source contracts used here:
+ //   legacy: specularRect.rgb = specular color, specularRect.a = glossiness
+@@ -118,6 +119,22 @@
+     ui_type = "drag";
+     ui_min = 0.01; ui_max = 1.0; ui_step = 0.01;
+ > = 0.18;
++
++uniform int SSRDisocclusionSkips
++<
++    ui_label = "Disocclusion Skips";
++    ui_tooltip = "Number of oversized depth crossings the ray may skip instead of terminating. This can recover SSR hidden behind thin foreground occluders such as avatars.";
++    ui_type = "slider";
++    ui_min = 0; ui_max = 4;
++> = 2;
++
++uniform float SSRDisocclusionConfidence
++<
++    ui_label = "Skipped-Hit Confidence";
++    ui_tooltip = "Confidence retained for a hit found after skipping an oversized crossing. Lower values reduce false through-object reflections.";
++    ui_type = "drag";
++    ui_min = 0.10; ui_max = 1.00; ui_step = 0.05;
++> = 0.55;
+ 
+ uniform float SSRMaxDistance
+ <
+@@ -238,7 +255,8 @@
+         "Raw specular RGB x32\0"
+         "Legacy no-spec fallback mask\0"
+         "PBR alpha-blend path probe mask\0"
+-        "Reflection base removal x10\0";
++        "Reflection base removal x10\0"
++        "Disocclusion-skip hit mask\0";
+ > = 0;
+ 
+ uniform float SSRDebugGain
+@@ -648,11 +666,13 @@
+     float3 rayDir,
+     out float2 hitUV,
+     out float hitDistance,
+-    out float confidence)
++    out float confidence,
++    out float disocclusionUsed)
+ {
+     hitUV = 0.0;
+     hitDistance = 0.0;
+     confidence = 0.0;
++    disocclusionUsed = 0.0;
+ 
+     // Rays heading back toward/through the camera cannot produce a stable
+     // visible-screen intersection.
+@@ -664,6 +684,7 @@
+     float previousT = 0.0;
+     float previousDelta = -1e6;
+     bool previousValid = false;
++    int disocclusionSkipsUsed = 0;
+ 
+     float t = max(SSRInitialStep, 0.01);
+ 
+@@ -733,11 +754,30 @@
+                 hitUV = finalUV;
+                 hitDistance = hi;
+                 confidence = EdgeConfidence(finalUV) * DistanceConfidence(hi);
++                if (disocclusionSkipsUsed > 0)
++                {
++                    disocclusionUsed = 1.0;
++                    confidence *= pow(saturate(SSRDisocclusionConfidence), (float)disocclusionSkipsUsed);
++                }
+                 return confidence > 0.0;
+             }
+ 
+-            // A very large crossing usually means the ray jumped through a
+-            // disocclusion. Do not accept it as a reflection hit.
++            // v0.17: an oversized crossing can be a foreground occluder hiding
++            // the reflected background in the current screen-space depth layer.
++            // Instead of killing the ray immediately, skip a small number of
++            // these crossings and keep marching. Confidence is reduced on any
++            // later hit so this remains a conservative hole-recovery path.
++            if (disocclusionSkipsUsed < SSRDisocclusionSkips)
++            {
++                disocclusionSkipsUsed++;
++                disocclusionUsed = 1.0;
++                previousValid = false;
++                previousDelta = -1e6;
++                previousT = t;
++                t += max(SSRThickness * 1.5, SSRInitialStep);
++                continue;
++            }
++
+             return false;
+         }
+ 
+@@ -907,7 +947,7 @@
+ {
+     // Ray-hit and raw-hit-color diagnostics test geometry/scene transport only.
+     // They must remain useful even if the material/specular semantic is missing.
+-    const bool geometryDebug = (SSRDisplayMode == 2 || SSRDisplayMode == 11);
++    const bool geometryDebug = (SSRDisplayMode == 2 || SSRDisplayMode == 11 || SSRDisplayMode == 22);
+ 
+     if (!(geometryDebug ? SSRTraceReady() : SSRReady()) ||
+         !InsideFirestormWorld(uv))
+@@ -939,9 +979,13 @@
+     float2 hitUV;
+     float hitDistance;
+     float confidence;
+-
+-    if (!TraceSSR(viewPos, normal, rayDir, hitUV, hitDistance, confidence))
++    float disocclusionUsed;
++
++    if (!TraceSSR(viewPos, normal, rayDir, hitUV, hitDistance, confidence, disocclusionUsed))
+         return 0.0;
++
++    if (SSRDisplayMode == 22)
++        return float4(disocclusionUsed.xxx, confidence);
+ 
+     float3 hitColor = max(GetSceneLinear(hitUV).rgb, 0.0);
+ 
+@@ -968,6 +1012,9 @@
+ 
+     if (SSRDisplayMode == 2)
+         return float4(rawSSR.aaa, 1.0);
++
++    if (SSRDisplayMode == 22)
++        return float4(saturate(rawSSR.r).xxx, 1.0);
+ 
+     if (SSRDisplayMode == 3)
+     {
+@@ -1141,10 +1188,10 @@
+     return color;
+ }
+ 
+-technique SL_SSR_v0_16_EnergyComposite
+-<
+-    ui_label = "SL SSR v0.16 - Energy Composite";
+-    ui_tooltip = "Replaces receiver/base energy under valid SSR instead of only adding reflection on top. This targets dark cast-shadow ghosting visible through strong floor reflections; v0.15 PBR-alpha probe support remains available.";
++technique SL_SSR_v0_17_DisocclusionSkip
++<
++    ui_label = "SL SSR v0.17 - Disocclusion Skip";
++    ui_tooltip = "v0.17 keeps the v0.16 energy composite and allows a limited number of oversized depth crossings to be skipped, targeting camera-dependent SSR holes caused by foreground occluders such as avatars. v0.15 PBR-alpha probe support remains available.";
+ >
+ {
+     pass Trace
