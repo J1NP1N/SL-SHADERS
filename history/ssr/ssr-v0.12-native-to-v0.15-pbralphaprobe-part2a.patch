@@ -1,0 +1,256 @@
+--- a/SLProbeLighting.cpp
++++ b/SLProbeLighting.cpp
+@@ -2796,6 +3186,8 @@
+ uniform sampler2D specularRect;
+ uniform sampler2D lightMap;
+ uniform sampler2D sceneLinearSource;
++uniform sampler2D pbrAlphaBefore;
++uniform sampler2D pbrAlphaAfter;
+ uniform samplerCubeArray irradianceProbes;
+ 
+ uniform mat4 inv_proj;
+@@ -3651,6 +4043,15 @@
+         fragColor = texture(specularRect, vUV);
+         return;
+     }
++    else if (sl_output_mode == 7)
++    {
++        vec3 beforeColor = texture(pbrAlphaBefore, vUV).rgb;
++        vec3 afterColor = texture(pbrAlphaAfter, vUV).rgb;
++        vec3 delta = abs(afterColor - beforeColor);
++        float changed = step(0.0001, max(delta.r, max(delta.g, delta.b)));
++        fragColor = vec4(changed, changed, changed, 1.0);
++        return;
++    }
+ 
+     fragColor =
+         vec4(
+@@ -4289,6 +4690,11 @@
+             api::resource_view { 0 },
+             api::resource_view { 0 });
+ 
++        runtime->update_texture_bindings(
++            "SL_PBR_ALPHA_MASK",
++            api::resource_view { 0 },
++            api::resource_view { 0 });
++
+         output.semantic_bound = false;
+         output.ambient_semantic_bound = false;
+         output.probe_semantic_bound = false;
+@@ -4296,6 +4702,7 @@
+         output.diffuse_response_semantic_bound = false;
+         output.scene_linear_semantic_bound = false;
+         output.specular_semantic_bound = false;
++        output.pbr_alpha_mask_semantic_bound = false;
+         output.rendered_last_pass = false;
+     }
+ 
+@@ -4359,6 +4766,13 @@
+             output.specular_view = { 0 };
+         }
+ 
++        if (output.pbr_alpha_mask_view != 0)
++        {
++            device->destroy_resource_view(
++                output.pbr_alpha_mask_view);
++            output.pbr_alpha_mask_view = { 0 };
++        }
++
+         if (output.ambient_resource != 0)
+         {
+             device->destroy_resource(
+@@ -4401,6 +4815,13 @@
+             output.specular_resource = { 0 };
+         }
+ 
++        if (output.pbr_alpha_mask_resource != 0)
++        {
++            device->destroy_resource(
++                output.pbr_alpha_mask_resource);
++            output.pbr_alpha_mask_resource = { 0 };
++        }
++
+         if (output.resource != 0)
+         {
+             device->destroy_resource(
+@@ -5113,6 +5534,7 @@
+             output.diffuse_response_resource != 0 &&
+             output.scene_linear_resource != 0 &&
+             output.specular_resource != 0 &&
++            output.pbr_alpha_mask_resource != 0 &&
+             output.width == width &&
+             output.height == height)
+             return true;
+@@ -5160,6 +5582,9 @@
+         destroy_target(
+             output.specular_resource,
+             output.specular_view);
++        destroy_target(
++            output.pbr_alpha_mask_resource,
++            output.pbr_alpha_mask_view);
+ 
+         api::resource_desc desc(
+             width,
+@@ -5260,6 +5685,15 @@
+                 output.specular_view))
+             return false;
+ 
++        if (!create_native_target(
++                runtime,
++                desc,
++                "SL Firestorm PBR alpha path probe mask",
++                "SL_PBR_ALPHA_MASK published view",
++                output.pbr_alpha_mask_resource,
++                output.pbr_alpha_mask_view))
++            return false;
++
+         output.desc = desc;
+         output.width = width;
+         output.height = height;
+@@ -5270,7 +5704,8 @@
+     bool render_native_irradiance(
+         api::effect_runtime *runtime,
+         native_output &output,
+-        const probe_capture &capture)
++        const probe_capture &capture,
++        const pbr_alpha_snapshot_capture &pbr_alpha_snapshot)
+     {
+         output.rendered_last_pass = false;
+         output.fbo_complete = false;
+@@ -5333,10 +5768,10 @@
+             0,
+             &previous_ubo0);
+ 
+-        GLint previous_tex2d[7] = {};
++        GLint previous_tex2d[9] = {};
+         GLint previous_cube = 0;
+ 
+-        for (int unit = 0; unit < 7; ++unit)
++        for (int unit = 0; unit < 9; ++unit)
+         {
+             p_glActiveTexture(
+                 GL_TEXTURE0_VALUE +
+@@ -5424,6 +5859,22 @@
+                 ? capture.scene_linear.texture
+                 : 0);
+ 
++        p_glActiveTexture(
++            GL_TEXTURE0_VALUE + 7);
++        glBindTexture(
++            GL_TEXTURE_2D_VALUE,
++            pbr_alpha_snapshot.valid
++                ? pbr_alpha_snapshot.before.texture
++                : 0);
++
++        p_glActiveTexture(
++            GL_TEXTURE0_VALUE + 8);
++        glBindTexture(
++            GL_TEXTURE_2D_VALUE,
++            pbr_alpha_snapshot.valid
++                ? pbr_alpha_snapshot.after.texture
++                : 0);
++
+         const GLint depth_location =
+             p_glGetUniformLocation(
+                 output.program,
+@@ -5459,6 +5910,16 @@
+                 output.program,
+                 "sceneLinearSource");
+ 
++        const GLint pbr_alpha_before_location =
++            p_glGetUniformLocation(
++                output.program,
++                "pbrAlphaBefore");
++
++        const GLint pbr_alpha_after_location =
++            p_glGetUniformLocation(
++                output.program,
++                "pbrAlphaAfter");
++
+         const GLint inv_location =
+             p_glGetUniformLocation(
+                 output.program,
+@@ -5564,6 +6025,16 @@
+                 scene_linear_location,
+                 6);
+ 
++        if (pbr_alpha_before_location >= 0)
++            p_glUniform1i(
++                pbr_alpha_before_location,
++                7);
++
++        if (pbr_alpha_after_location >= 0)
++            p_glUniform1i(
++                pbr_alpha_after_location,
++                8);
++
+         if (inv_location >= 0)
+             p_glUniformMatrix4fv(
+                 inv_location,
+@@ -5778,6 +6249,24 @@
+                     6)
+                 : false;
+ 
++        const bool pbr_alpha_source_valid =
++            pbr_alpha_snapshot.valid &&
++            pbr_alpha_snapshot.before.texture_bound &&
++            pbr_alpha_snapshot.before.desc_valid &&
++            pbr_alpha_snapshot.after.texture_bound &&
++            pbr_alpha_snapshot.after.desc_valid &&
++            pbr_alpha_snapshot.before.desc.texture.width == width &&
++            pbr_alpha_snapshot.before.desc.texture.height == height &&
++            pbr_alpha_snapshot.after.desc.texture.width == width &&
++            pbr_alpha_snapshot.after.desc.texture.height == height;
++
++        const bool pbr_alpha_mask_ok =
++            pbr_alpha_source_valid
++                ? render_target(
++                    output.pbr_alpha_mask_resource,
++                    7)
++                : false;
++
+         const GLenum error =
+             (mixed_ok &&
+              ambient_ok &&
+@@ -5795,7 +6284,7 @@
+                     previous_ubo0)
+                 : 0);
+ 
+-        for (int unit = 0; unit < 7; ++unit)
++        for (int unit = 0; unit < 9; ++unit)
+         {
+             p_glActiveTexture(
+                 GL_TEXTURE0_VALUE +
+@@ -5909,6 +6398,15 @@
+                 ? output.specular_view
+                 : api::resource_view { 0 });
+ 
++        runtime->update_texture_bindings(
++            "SL_PBR_ALPHA_MASK",
++            pbr_alpha_mask_ok
++                ? output.pbr_alpha_mask_view
++                : api::resource_view { 0 },
++            pbr_alpha_mask_ok
++                ? output.pbr_alpha_mask_view
++                : api::resource_view { 0 });
++
+         output.semantic_bound = true;
+         output.ambient_semantic_bound = true;
+         output.probe_semantic_bound = true;
+@@ -5916,6 +6414,7 @@
+         output.diffuse_response_semantic_bound = true;
+         output.scene_linear_semantic_bound = scene_linear_ok;
+         output.specular_semantic_bound = specular_publish_ok;
++        output.pbr_alpha_mask_semantic_bound = pbr_alpha_mask_ok;
+         output.rendered_last_pass = true;
+         output.render_count++;
+ 
+@@ -6089,7 +6588,7 @@
+ 
+             reshade::log::message(
+                 reshade::log::level::info,
+-                "SL Probe Lighting v1.6.10: Firestorm compatibility DEPTH + ReShade-published G-buffer bridge initialized (v0.12 ReShadePublish).");
++                "SL Probe Lighting v1.6.11: Firestorm compatibility DEPTH + PBR alpha path probe initialized (v0.15 PBRAlphaProbe).");
+         }
+     }
+ 
