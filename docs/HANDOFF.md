@@ -8,7 +8,7 @@ This is the live project checkpoint.
 
 Opaque SSR plumbing/material response are proven. v0.16 fixed the dark additive-composite shadow bleed. The persistent camera-dependent avatar-adjacent black strip is still present in the geometry/ray-hit path.
 
-The current leading hypothesis is now **ray-march sampling/tunneling**, not total trace range, hit thickness, material weighting, or final composite.
+Current leading hypothesis is now **background-to-geometry entry miss in TraceSSR**, more specific than generic sampling/tunneling. The missing BLUE region has the upside-down silhouette of the avatar reflection.
 
 Installed native bridge may remain **SLProbeLighting v1.6.11 / v0.15 PBRAlphaProbe**.
 
@@ -41,62 +41,48 @@ Current FX baseline under investigation: **SSR v0.19 TraceBudget**.
 - Global `Hit Thickness` is not the controlling fix.
 - v0.18 classifies the bad strip as BLUE/no accepted crossing.
 - v0.19 proves the old 32-step hard ceiling was a real bug, but **not the full cause of this strip**.
+- Follow-up images cleanly separate ORANGE disocclusion rejection from BLUE no-crossing failure.
+- The BLUE missing region follows the upside-down avatar-reflection silhouette.
 
-## v0.19 runtime result
+## Current source-level diagnosis
 
-Runtime screenshot showed:
+The current marcher detects a hit only on:
 
-- Trace Steps = 48
-- Initial Ray Step = 0.12
-- Ray Step Growth = 1.18
-- Maximum Ray Distance = 128
-- Hit Thickness = 0.18
-- Disocclusion Skips = 4
-- Skipped-Hit Confidence = 1.00
+`previousValid && previousDelta < 0.0 && delta >= 0.0`
 
-The bad strip still remained BLUE.
+But a background depth sample does:
 
-With 48 steps at 0.12 / 1.18, the march can reach beyond the visible 128-unit maximum-distance setting. Therefore the target strip is no longer explained by insufficient total ray range or the old hard 32-step ceiling.
+`previousValid = false`
 
-Runtime result commit: `e64462d2d304cafe39e552eb06c5983c86da9c29`.
+This creates a specific blind spot:
 
-## Current hypothesis: sampling / tunneling
+1. ray samples background;
+2. next sample lands directly on the avatar and already has `delta >= 0`;
+3. the crossing is not tested because `previousValid` is false;
+4. the positive avatar sample becomes the new previous sample;
+5. the ray may leave the thin avatar silhouette without ever producing the required negative-to-positive transition.
 
-The marcher samples exponentially spaced distances and only detects a hit when sampled depth changes from negative to non-negative:
+That exactly matches an upside-down avatar-shaped BLUE hole while surrounding reflection geometry still works.
 
-`previousDelta < 0 && delta >= 0`
+This is more specific than generic exponential-step tunneling. Reducing step growth can mask the problem by increasing the chance of a negative geometry sample before the positive sample, but the structural problem is that **background -> first non-background positive sample cannot currently bracket a hit**.
 
-A thin or steep reflected surface can therefore be crossed between two samples and never produce the required sign transition. In that case:
+## Next revision
 
-- `Hit Thickness` does nothing because binary refinement never starts;
-- extending maximum distance does nothing because the ray already passed the missed geometry;
-- adding more late samples does little if the local spacing near the target remains too coarse.
+Build **SSR v0.20 BackgroundEntry** as an FX-only isolated test.
 
-This matches the persistent BLUE result around thin avatar/limb reflection geometry.
+Goals:
 
-## Next runtime step
+- preserve all v0.19 material/composite behavior;
+- preserve ORANGE disocclusion handling as a separate path;
+- add a conservative background-entry candidate when the previous march state was background and the first non-background sample is `delta >= 0`;
+- bracket/refine that entry against the last background march interval rather than silently storing the positive sample;
+- add a diagnostic mask/color for hits recovered specifically through this background-entry path.
 
-Before another structural marcher rewrite, use v0.19 and test local sample density on the same bad camera angle.
+Primary success criterion: the upside-down avatar-shaped BLUE region turns WHITE/valid hit without widespread through-object false positives.
 
-Keep:
+Do not replace the entire marcher until this narrower hypothesis is tested.
 
-- Trace Steps = 48
-- Initial Ray Step = 0.12
-- Hit Thickness = 0.18
-- Disocclusion Skips = 0 for a clean test
-- Ray termination reason display
-
-Test `Ray Step Growth` in this order:
-
-1. `1.12`
-2. `1.08`
-
-Set Maximum Ray Distance only high enough for the avatar reflection target; do not use 128 unless needed. The purpose is local density, not range.
-
-Interpretation:
-
-- BLUE strip shrinks/turns WHITE as growth is reduced: sampling/tunneling confirmed. Next build should replace the current coarse exponential march with a denser/adaptive screen-space/depth-aware march while preserving practical cost.
-- BLUE strip unchanged: next build should add a closest-approach diagnostic (minimum absolute depth delta along BLUE rays) before changing the marcher.
+Runtime result commit with this refined diagnosis: `1c3737dbbf9aeed0240c4729593cc2fb6ca999ff`.
 
 ## Glass checkpoint
 
@@ -127,6 +113,7 @@ v0.15 first-segment PBR-alpha probe mask was black in the supplied runtime image
 - v0.18 runtime record: `179a926ac5d6b788d680ce146b899f762d494576`
 - v0.19 source delta: `faeee069379d21e8bd824c0e3087b77be170898d`
 - v0.19 runtime record: `e64462d2d304cafe39e552eb06c5983c86da9c29`
+- v0.19 refined diagnosis: `1c3737dbbf9aeed0240c4729593cc2fb6ca999ff`
 
 Original recovered v0.10 source commit: `dd7022c80e0acf89295b11bda00ee788ae10d166`.
 
