@@ -1,0 +1,58 @@
+--- v0.25/SL_SSR_v0_1_LegacyFirst.fx
++++ v0.26/SL_SSR_v0_1_LegacyFirst.fx
+@@ -1,7 +1,7 @@
+-// SL_SSR_v0_25_SilhouetteGate.fx
++// SL_SSR_v0_26_OriginBiasAudit.fx
+ // Firestorm-native-data screen-space reflections for ReShade.
+ //
+-// v0.25 lineage / current goals:
++// v0.26 lineage / current goals:
+ //   - legacy SL materials first
+ //   - exact Firestorm SL_DEPTH + SL_NORMALS
+ //   - exact Firestorm projection/inverse projection from SLProbeLighting
+@@ -22,6 +22,7 @@
+ //   - recover background-to-geometry silhouette entries that cannot form a normal depth sign pair
+ //   - classify BLUE/no-hit rays by the depth samples they actually observed
+ //   - classify mixed-sign no-hit rays by actual crossing-candidate path
++//   - decouple ray-origin self-intersection bias from Hit Thickness
+ //   - recover terminal oversized candidates that converge onto a tight foreground silhouette edge
+ //   - diagnose which silhouette-edge acceptance gate rejects remaining target candidates
+ //   - deepen binary refinement so valid silhouette crossings are not misclassified oversized
+@@ -127,6 +128,14 @@
+     ui_type = "drag";
+     ui_min = 0.01; ui_max = 1.0; ui_step = 0.01;
+ > = 0.18;
++
++uniform float SSRRayOriginBias
++<
++    ui_label = "Ray Origin Bias";
++    ui_tooltip = "Independent view-space normal offset used only to avoid receiver self-intersection. v0.25 and earlier incorrectly derived this from Hit Thickness (0.18 -> 0.135 units).";
++    ui_type = "drag";
++    ui_min = 0.0; ui_max = 0.25; ui_step = 0.005;
++> = 0.010;
+ 
+ uniform int SSRBackgroundEntryRecovery
+ <
+@@ -765,7 +774,7 @@
+         return false;
+     }
+ 
+-    float3 startPos = originPos + originNormal * max(SSRThickness * 0.75, 0.01);
++    float3 startPos = originPos + originNormal * max(SSRRayOriginBias, 0.0);
+ 
+     float previousT = 0.0;
+     float previousDelta = -1e6;
+@@ -1558,10 +1567,10 @@
+     return color;
+ }
+ 
+-technique SL_SSR_v0_25_SilhouetteGate
++technique SL_SSR_v0_26_OriginBiasAudit
+ <
+-    ui_label = "SL SSR v0.25 - Silhouette Gate";
+-    ui_tooltip = "Diagnostic v0.25 preserves v0.24 behavior and color-codes the exact silhouette-edge gate that rejects each terminal oversized candidate.";
++    ui_label = "SL SSR v0.26 - Origin Bias Audit";
++    ui_tooltip = "v0.26 preserves the v0.25 diagnostics but decouples ray-origin self-intersection bias from Hit Thickness. Use 0.010 as the corrected baseline and 0.135 to reproduce the old effective bias at Hit Thickness 0.18.";
+ >
+ {
+     pass Trace
