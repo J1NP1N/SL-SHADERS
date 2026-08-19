@@ -39,11 +39,11 @@ Source review is not runtime proof. The normal loop is:
 
 ## Current recovered checkpoints
 
-| Subsystem | Newest recovered checkpoint | Remote package state |
+| Subsystem | Newest recovered checkpoint | Remote state |
 |---|---|---|
 | SLNativeBridge | v0.9a AlphaReplayMask | recovered; large ZIP not yet byte-valid in GitHub |
 | SLProbeBridge | v0.3b FBOAtlas | **verified ZIP in GitHub** |
-| SLProbeLighting | v1.6.6 / SSR v0.8 SourceProof | **current active work; recovered ZIP exists, remote large ZIP not yet byte-valid** |
+| SLProbeLighting | **v1.6.8 / SSR v0.10 MainPassGate** | **current active state; exact source is in recovered patch/bundle, not yet normal source files on `main`** |
 | SLVolumetricBridge | v0.1d PrivateShadowCopies | recovered; large ZIP not yet byte-valid in GitHub |
 | SLSceneLayer | v0.1 UISeparation | **verified ZIP in GitHub** |
 | iMMERSE Firestorm Native | v0.6 RawAOAlphaReceiver | recovered integration checkpoint |
@@ -52,17 +52,28 @@ Source review is not runtime proof. The normal loop is:
 | SSGI | v0.3 RayMarch | recovered; large ZIP not yet byte-valid in GitHub |
 | Firestorm DEPTH override | v0.2.1 / SLProbeLighting v1.6.1 | historical/superseded infrastructure checkpoint |
 
-For exact byte counts/checksums and what is genuinely verified, read [`packages/RECOVERY_STATUS.md`](packages/RECOVERY_STATUS.md). A successful upload response is **not** considered proof of a valid package.
+For exact byte counts/checksums and what is genuinely verified, read [`packages/RECOVERY_STATUS.md`](packages/RECOVERY_STATUS.md). A successful upload response is **not** proof of a valid binary package.
 
 ## Current SSR state
 
-Current active package name: `SL_SSR_v0_8_SourceProof.zip` / SLProbeLighting v1.6.6.
+**SLProbeLighting v1.6.8 / SSR v0.10 MainPassGate** is the active recovered checkpoint.
 
-The ray transport and scene-color path are already proven. v0.8 is a source-proof diagnostic pass for Firestorm's authoritative material G-buffer (`specularRect`) and the copy/binding lifetime into ReShade. Do not resume SSR appearance/weight tuning until that material source is numerically proven.
+Material-source capture is now proven. The long-standing black `specularRect` diagnostic was caused by **wrong deferred-draw selection**, not a broken read/copy path. Firestorm emits multiple authoritative deferred/probe-related draws at the same `refmapCount`; earlier analysis latched a 512x512 probe-space `specularRect` instead of the full-resolution main-pass attachment.
 
-The v0.8 analyzer samples nine 8x8 blocks on a 3x3 screen grid = 576 pixels, not the whole frame. The test material must occupy a substantial portion of the viewport.
+v0.9 ReadProof exposed the mismatch by reporting dimensions/read status/component format. v0.10 MainPassGate then gated source-proof capture to candidates at >=75% of the tallest observed specular draw. On the proven run, analysis selected `tex 8, 3840 x 2027`, read clean nonzero material RGB from the center, and the private snapshot matched.
 
-For the exact test and the v0.5 -> v0.8 reasoning, read [`docs/HANDOFF.md`](docs/HANDOFF.md).
+The immediate next runtime step is **not** another capture fix. On the same red-specular object, report:
+
+```text
+Material class: legacy cyan / PBR magenta
+Bridge status
+```
+
+If material class is legacy/cyan, the next work is downstream FX consumption and SSR appearance/weighting. If it is PBR/magenta, resolve material classification first.
+
+The FX file itself is unchanged from v0.8 through v0.10; the v0.9/v0.10 fixes are native add-on changes.
+
+See [`docs/HANDOFF.md`](docs/HANDOFF.md) for the complete root-cause chain and exact recovered commit/artifact hashes.
 
 ## Repository layout
 
@@ -75,7 +86,7 @@ tools/installer/SL_InstallLatest.ps1
 docs/HANDOFF.md         live chat-swap/current-state checkpoint
 docs/DEBUG_PROTOCOL.md
 docs/UPSTREAM_RENDERER_NOTES.md
-history/                 recovered prior-Git commit inventory
+history/                 recovered prior-Git commit inventory/import notes
 ```
 
 ## Version rule
@@ -86,8 +97,10 @@ New ReShade builds must have unambiguous visible version/technique identifiers; 
 
 ## Historical Git recovery
 
-A real prior `SL_Firestorm_Render_Extensions` Git repository was recovered from an older archive. Its 12 original commit IDs/messages are recorded in [`history/SL_Firestorm_Render_Extensions/RECOVERED_GIT_LOG.md`](history/SL_Firestorm_Render_Extensions/RECOVERED_GIT_LOG.md). That graph is treated as genuine history and will not be replaced with invented commits.
+A real prior `SL_Firestorm_Render_Extensions` Git repository was recovered from an older archive. Its original commit IDs/messages are recorded under `history/`. That graph is treated as genuine history and will not be replaced with invented commits.
+
+The SSR v0.10 recovery patch/bundle contains target commit `dd7022c80e0acf89295b11bda00ee788ae10d166`. Its source tree is recoverable locally from the uploaded artifact even though the bundle's advertised remote-tracking ref has incomplete ancestry. See `docs/HANDOFF.md` and `packages/RECOVERY_STATUS.md` before attempting an import.
 
 ## Working rule
 
-Every meaningful source, diagnostic, or architectural change gets committed here with the relevant state update. **If the current test or conclusion changes, update `docs/HANDOFF.md` in the same commit.** Chat history is never the only copy of project state.
+Every meaningful source, diagnostic, or architectural change gets committed here with the relevant state update. If the current runtime conclusion changes, update `docs/HANDOFF.md` immediately. Chat history is never the only copy of project state.
