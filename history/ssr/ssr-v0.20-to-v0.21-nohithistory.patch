@@ -1,0 +1,145 @@
+--- v0.20/SL_SSR_v0_1_LegacyFirst.fx
++++ v0.21/SL_SSR_v0_1_LegacyFirst.fx
+@@ -1,7 +1,7 @@
+-// SL_SSR_v0_20_BackgroundEntry.fx
++// SL_SSR_v0_21_NoHitHistory.fx
+ // Firestorm-native-data screen-space reflections for ReShade.
+ //
+-// v0.20 lineage / current goals:
++// v0.21 lineage / current goals:
+ //   - legacy SL materials first
+ //   - exact Firestorm SL_DEPTH + SL_NORMALS
+ //   - exact Firestorm projection/inverse projection from SLProbeLighting
+@@ -20,6 +20,7 @@
+ //   - half-resolution ray tracing for practical cost
+ //   - trace budget large enough to reach configured max distance at default growth
+ //   - recover background-to-geometry silhouette entries that cannot form a normal depth sign pair
++//   - classify BLUE/no-hit rays by the depth samples they actually observed
+ //   - limited skip-through for oversized foreground disocclusion crossings
+ //   - diagnostic classification of every geometry-trace rejection path
+ //
+@@ -277,7 +278,9 @@
+         "Reflection base removal x10\0"
+         "Disocclusion-skip hit mask\0"
+         "Ray termination reason\0"
+-        "Background-entry recovered hit mask\0";
++        "Background-entry recovered hit mask\0"
++        "No-hit depth history\0"
++        "No-hit closest depth delta\0";
+ > = 0;
+@@ -694,7 +697,9 @@
+     out float confidence,
+     out float disocclusionUsed,
+     out float backgroundEntryUsed,
+-    out float rejectReason)
++    out float rejectReason,
++    out float noHitHistoryClass,
++    out float minAbsDepthDelta)
+ {
+@@ -704,6 +709,8 @@
+     disocclusionUsed = 0.0;
+     backgroundEntryUsed = 0.0;
++    noHitHistoryClass = 0.0;
++    minAbsDepthDelta = 1e6;
+@@ -723,6 +730,9 @@
+     bool previousValid = false;
+     bool previousWasBackground = false;
++    bool sawBackgroundSample = false;
++    bool sawNegativeGeometry = false;
++    bool sawNonNegativeGeometry = false;
+     int disocclusionSkipsUsed = 0;
+@@ -745,6 +755,7 @@
+         if (delta < -9e5)
+         {
++            sawBackgroundSample = true;
+             previousValid = true;
+@@ -757,6 +768,13 @@
+             continue;
+         }
++
++        minAbsDepthDelta = min(minAbsDepthDelta, abs(delta));
++        if (delta < 0.0)
++            sawNegativeGeometry = true;
++        else
++            sawNonNegativeGeometry = true;
+@@ -862,6 +880,20 @@
+         t *= SSRStepGrowth;
+     }
++
++    if (rejectReason > 2.5 && rejectReason < 3.5)
++    {
++        if (!sawNegativeGeometry && !sawNonNegativeGeometry)
++            noHitHistoryClass = sawBackgroundSample ? 1.0 : 5.0;
++        else if (sawNegativeGeometry && !sawNonNegativeGeometry)
++            noHitHistoryClass = 2.0;
++        else if (!sawNegativeGeometry && sawNonNegativeGeometry)
++            noHitHistoryClass = 3.0;
++        else
++            noHitHistoryClass = 4.0;
++    }
+ 
+     return false;
+ }
+@@ -883,6 +915,25 @@
+     return float3(1.0, 1.0, 0.0);
+ }
++
++float3 NoHitHistoryColor(float historyClass, bool accepted, float rejectReason)
++{
++    if (accepted)
++        return 1.0.xxx;
++    if (!(rejectReason > 2.5 && rejectReason < 3.5))
++        return TraceRejectReasonColor(rejectReason, false);
++    if (historyClass < 1.5)
++        return float3(0.0, 0.25, 1.0);
++    if (historyClass < 2.5)
++        return float3(0.0, 1.0, 0.0);
++    if (historyClass < 3.5)
++        return float3(1.0, 0.0, 0.0);
++    if (historyClass < 4.5)
++        return float3(1.0, 1.0, 0.0);
++    return float3(0.5, 0.0, 1.0);
++}
+@@ -1059,7 +1110,7 @@
+-    const bool geometryDebug = (SSRDisplayMode == 2 || SSRDisplayMode == 11 || SSRDisplayMode == 22 || SSRDisplayMode == 23 || SSRDisplayMode == 24);
++    const bool geometryDebug = (SSRDisplayMode == 2 || SSRDisplayMode == 11 || SSRDisplayMode == 22 || SSRDisplayMode == 23 || SSRDisplayMode == 24 || SSRDisplayMode == 25 || SSRDisplayMode == 26);
+@@ -1091,10 +1142,29 @@
+     float backgroundEntryUsed;
+     float rejectReason;
++    float noHitHistoryClass;
++    float minAbsDepthDelta;
+ 
+-    bool traceAccepted = TraceSSR(viewPos, normal, rayDir, hitUV, hitDistance, confidence, disocclusionUsed, backgroundEntryUsed, rejectReason);
++    bool traceAccepted = TraceSSR(viewPos, normal, rayDir, hitUV, hitDistance, confidence, disocclusionUsed, backgroundEntryUsed, rejectReason, noHitHistoryClass, minAbsDepthDelta);
+@@ -1102,6 +1172,20 @@
+     if (SSRDisplayMode == 23)
+         return float4(TraceRejectReasonColor(rejectReason, traceAccepted), 1.0);
++
++    if (SSRDisplayMode == 25)
++        return float4(NoHitHistoryColor(noHitHistoryClass, traceAccepted, rejectReason), 1.0);
++
++    if (SSRDisplayMode == 26)
++    {
++        if (traceAccepted)
++            return 1.0.xxxx;
++        if (!(rejectReason > 2.5 && rejectReason < 3.5) || minAbsDepthDelta > 9e5)
++            return 0.0;
++        float scale = max(SSRThickness * 4.0, 0.05);
++        float nearValue = 1.0 - saturate(minAbsDepthDelta / scale);
++        return float4(nearValue.xxx, 1.0);
++    }
+@@ -1148,6 +1232,9 @@
+     if (SSRDisplayMode == 24)
+         return float4(saturate(rawSSR.r).xxx, 1.0);
++
++    if (SSRDisplayMode == 25 || SSRDisplayMode == 26)
++        return float4(saturate(rawSSR.rgb), 1.0);
+@@ -1287,10 +1374,10 @@
+-technique SL_SSR_v0_20_BackgroundEntry
++technique SL_SSR_v0_21_NoHitHistory
+ <
+-    ui_label = "SL SSR v0.20 - Background Entry";
+-    ui_tooltip = "v0.20 targets upside-down silhouette-shaped BLUE holes by preserving background as the negative side of a screen-space crossing and recovering the first geometry entry when it is already in front of the reflected ray.";
++    ui_label = "SL SSR v0.21 - No-Hit History";
++    ui_tooltip = "Diagnostic v0.21 classifies BLUE/no-hit rays by whether they sampled only background, only negative geometry, only non-negative geometry, or both depth signs. It also exposes closest sampled depth separation.";
+ >
