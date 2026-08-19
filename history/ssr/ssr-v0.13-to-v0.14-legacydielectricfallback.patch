@@ -1,0 +1,277 @@
+diff -ruN SL_SSR_v0_13_LegacyRGBResponse/README.txt SL_SSR_v0_14_LegacyDielectricFallback/README.txt
+--- SL_SSR_v0_13_LegacyRGBResponse/README.txt	2026-08-19 02:32:44.000000000 +0000
++++ SL_SSR_v0_14_LegacyDielectricFallback/README.txt	2026-08-19 02:48:25.523553744 +0000
+@@ -1,55 +1,36 @@
+-SL SSR v0.13 - Legacy RGB Response
+-=================================
++SL_SSR_v0_14_LegacyDielectricFallback
+ 
+ Purpose
+ -------
+-This is the first post-plumbing SSR response test after v0.12 proved that
+-Firestorm's full-resolution main-pass specularRect reaches the ReShade FX.
++v0.13 proved that valid legacy specularRect.rgb can drive visible SSR once the old alpha/glossiness gate is removed. Raw-hit diagnostics also already prove the ray tracer sees ordinary scene geometry regardless of material response.
+ 
+-v0.13 is FX-only. It requires the v0.12 ReShadePublish add-on to remain
+-installed and running.
++v0.14 tests the missing receiver case: legacy opaque surfaces that have neither explicit specular RGB nor classic-shiny/environment intensity.
+ 
+-Change under test
+------------------
+-Legacy/non-PBR pixels now follow Firestorm's native SSR material use more
+-closely:
+-
+-- specularRect.rgb directly colors the reflected scene contribution;
+-- specularRect.a/glossiness is NOT used as a reflectivity gate;
+-- classic shiny/environment intensity remains a neutral legacy fallback;
+-- PBR weighting is unchanged;
+-- ray marcher, scene source, depth, normals, publication path, and composite
+-  pipeline are otherwise unchanged.
++What changed
++------------
++FX only. The proven v0.12 native bridge remains installed.
+ 
+-The legacy glossiness UI control is intentionally retained for preset
+-compatibility but is labelled unused in v0.13.
++Legacy receiver priority is now:
++  1. explicit Firestorm legacy specularRect.rgb
++  2. classic shiny / environment intensity from the normal G-buffer
++  3. small neutral dielectric fallback only when both signals are absent
+ 
+-Install
+--------
+-FX-only hot install. Firestorm may remain open.
++Defaults:
++  Legacy No-Spec Threshold = 0.005
++  Legacy No-Spec Fallback  = 0.040
+ 
+-The ReShade technique must visibly read:
+-    SL SSR v0.13 - Legacy RGB Response
++The existing view-angle Fresnel still shapes the result, so the fallback is intentionally subtle and becomes strongest toward grazing angles. PBR ORM response is unchanged.
+ 
+-The native SL Probe Lighting overlay will still identify the installed bridge
+-as v1.6.10 / v0.12 ReShadePublish because this package does not replace the
+-add-on.
+-
+-Runtime report
++New diagnostic
+ --------------
+-Use the same legacy/cyan specular test scene. Do NOT press Analyze.
++Display Mode -> Legacy no-spec fallback mask
+ 
+-Return screenshots of:
+-1. Display Mode -> SSR contribution
+-2. Display Mode -> Final reflection weight x10
+-3. Display Mode -> Off (normal composite)
++White = legacy pixel receiving the synthetic fallback.
++Black = explicit legacy specular/classic shiny, PBR, or background.
+ 
+-Interpretation
+---------------
+-If contribution/weight now appear on legacy pixels with valid specular RGB,
+-the old alpha/glossiness gate was the downstream blocker and legacy material
+-response is unblocked.
+-
+-If G-buffer specular RGB remains valid but contribution/weight are still
+-black, the next fault is ray/receiver/composite weighting rather than material
+-publication.
++Install
++-------
++FX-only package. Firestorm may remain open. Run SL_InstallLatest.ps1 and confirm the technique label reads:
++  SL SSR v0.14 - Legacy Dielectric Fallback
++
++Do not press Analyze.
+diff -ruN SL_SSR_v0_13_LegacyRGBResponse/RUN_AND_INTERPRET.txt SL_SSR_v0_14_LegacyDielectricFallback/RUN_AND_INTERPRET.txt
+--- SL_SSR_v0_13_LegacyRGBResponse/RUN_AND_INTERPRET.txt	2026-08-19 02:32:44.000000000 +0000
++++ SL_SSR_v0_14_LegacyDielectricFallback/RUN_AND_INTERPRET.txt	2026-08-19 02:48:25.523588826 +0000
+@@ -1,19 +1,24 @@
+-SL SSR v0.13 LegacyRGBResponse
++SL SSR v0.14 LegacyDielectricFallback -- runtime test
++=====================================================
+ 
+-HOT INSTALL: FX only. Firestorm may stay open.
+-Requires the v0.12 ReShadePublish native add-on already installed.
++Goal
++----
++Verify that diffuse-only legacy opaque surfaces can receive a conservative SSR response without an authored specular map, while explicit legacy specular/classic shiny and PBR keep their existing paths.
+ 
+-Verify technique label:
+-  SL SSR v0.13 - Legacy RGB Response
++Return these views from the same scene:
+ 
+-Same legacy/cyan test scene. Do not press Analyze.
++1. Display Mode -> Legacy no-spec fallback mask
++   - diffuse-only legacy building/walls should be white where the fallback is active
++   - explicit legacy specular objects should be black
++   - PBR should be black
+ 
+-Send:
+-  1) SSR contribution
+-  2) Final reflection weight x10
+-  3) Display Mode Off / normal composite
++2. Display Mode -> SSR contribution
++   - fallback surfaces should now show a subtle nonzero reflected contribution where rays hit
+ 
+-What changed:
+-  Legacy specularRect RGB now directly colors SSR.
+-  Legacy specularRect A/glossiness no longer gates reflection energy.
+-  PBR path is unchanged.
++3. Display Mode -> Final reflection weight x10
++   - fallback surfaces should be visible but materially weaker than strong authored legacy specular
++
++4. Display Mode -> Final composite
++   - check whether ordinary building surfaces gain believable grazing reflections without looking wet/plastic
++
++Do not press Analyze. Acquisition/publication are already proven.
+diff -ruN SL_SSR_v0_13_LegacyRGBResponse/SL_SSR_v0_1_LegacyFirst.fx SL_SSR_v0_14_LegacyDielectricFallback/SL_SSR_v0_1_LegacyFirst.fx
+--- SL_SSR_v0_13_LegacyRGBResponse/SL_SSR_v0_1_LegacyFirst.fx	2026-08-19 02:32:44.000000000 +0000
++++ SL_SSR_v0_14_LegacyDielectricFallback/SL_SSR_v0_1_LegacyFirst.fx	2026-08-19 02:48:44.480759222 +0000
+@@ -1,7 +1,7 @@
+-// SL_SSR_v0_13_LegacyRGBResponse.fx
++// SL_SSR_v0_14_LegacyDielectricFallback.fx
+ // Firestorm-native-data screen-space reflections for ReShade.
+ //
+-// v0.13 lineage / current goals:
++// v0.14 lineage / current goals:
+ //   - legacy SL materials first
+ //   - exact Firestorm SL_DEPTH + SL_NORMALS
+ //   - exact Firestorm projection/inverse projection from SLProbeLighting
+@@ -9,6 +9,7 @@
+ //   - exact Firestorm specularRect through SL_GBUFFER_SPECULAR (draw-time snapshot)
+ //   - legacy selector from native specular RGB, with env intensity as a classic-shiny fallback
+ //   - legacy reflection color is tinted directly by Firestorm specularRect.rgb
++//   - legacy surfaces with no specular RGB and no classic-shiny/env signal receive a small neutral dielectric fallback
+ //   - legacy specularRect.a remains diagnostic glossiness only; it does not gate SSR energy
+ //   - split diagnostics so legacy glossiness is never confused with PBR roughness
+ //   - PBR remains secondary architecturally, but no longer attenuated to invisibility
+@@ -147,13 +148,29 @@
+ 
+ uniform float LegacyGlossinessStart
+ <
+-    ui_label = "Legacy Glossiness Start (unused v0.13)";
+-    ui_tooltip = "Diagnostic compatibility control retained from older builds. v0.13 does not gate legacy SSR with specularRect alpha; Firestorm native SSR colors reflections from specularRect RGB directly.";
++    ui_label = "Legacy Glossiness Start (unused v0.14)";
++    ui_tooltip = "Diagnostic compatibility control retained from older builds. v0.14 does not gate legacy SSR with specularRect alpha; Firestorm native SSR colors reflections from specularRect RGB directly.";
+     ui_type = "drag";
+     ui_min = 0.0; ui_max = 1.0; ui_step = 0.01;
+ > = 0.05;
+ 
+ 
++uniform float LegacyFallbackThreshold
++<
++    ui_label = "Legacy No-Spec Threshold";
++    ui_tooltip = "Legacy pixels at or below this raw specular/env signal are treated as having no authored reflection response.";
++    ui_type = "drag";
++    ui_min = 0.0; ui_max = 0.05; ui_step = 0.001;
++> = 0.005;
++
++uniform float LegacyDielectricFallback
++<
++    ui_label = "Legacy No-Spec Fallback";
++    ui_tooltip = "Neutral reflection multiplier for legacy surfaces with no specular RGB and no classic-shiny/env signal. 0.04 is a conservative dielectric-style starting point; view-angle Fresnel is still applied separately.";
++    ui_type = "drag";
++    ui_min = 0.0; ui_max = 0.20; ui_step = 0.005;
++> = 0.040;
++
+ uniform float LegacyMinReflectivity
+ <
+     ui_label = "Legacy Minimum To Trace";
+@@ -208,7 +225,8 @@
+         "Raw specular G\0"
+         "Raw specular B\0"
+         "Raw specular A\0"
+-        "Raw specular RGB x32\0";
++        "Raw specular RGB x32\0"
++        "Legacy no-spec fallback mask\0";
+ > = 0;
+ 
+ uniform float SSRDebugGain
+@@ -495,6 +513,21 @@
+     return abs(rawNormal.a - 0.67) < 0.1;
+ }
+ 
++float LegacyAuthoredSignal(float4 rawNormal, float4 specInfo)
++{
++    // Detect intent from the raw Firestorm material payload, before user scales.
++    // Either explicit legacy specular RGB or classic-shiny/environment intensity
++    // counts as authored reflection intent.
++    float specSignal = max(specInfo.r, max(specInfo.g, specInfo.b));
++    float envSignal = saturate(rawNormal.b);
++    return max(specSignal, envSignal);
++}
++
++bool LegacyUsesDielectricFallback(float4 rawNormal, float4 specInfo)
++{
++    return LegacyAuthoredSignal(rawNormal, specInfo) <= LegacyFallbackThreshold;
++}
++
+ float3 LegacySpecularTint(float4 rawNormal, float4 specInfo)
+ {
+     // Firestorm native SSR multiplies the reflected scene color directly by
+@@ -502,9 +535,18 @@
+     // but the native SSR post shader does not use alpha as a reflectivity gate.
+     float3 materialSpec = saturate(specInfo.rgb * LegacySpecularScale);
+ 
+-    // Preserve the older/simple classic-shiny path as a neutral fallback.
++    // Preserve classic shiny/environment intensity as the first neutral fallback.
+     float classicEnv = saturate(rawNormal.b) * LegacyEnvScale;
+-    return max(materialSpec, classicEnv.xxx);
++    float3 authoredTint = max(materialSpec, classicEnv.xxx);
++
++    // v0.14: only when Firestorm reports neither explicit specular RGB nor
++    // classic-shiny/environment intent, use a small neutral dielectric response.
++    // This lets ordinary legacy/diffuse-only opaque surfaces receive subtle SSR
++    // without pretending they have an authored specular map.
++    if (LegacyUsesDielectricFallback(rawNormal, specInfo))
++        return float3(saturate(LegacyDielectricFallback), saturate(LegacyDielectricFallback), saturate(LegacyDielectricFallback));
++
++    return authoredTint;
+ }
+ 
+ float LegacyReflectivity(float4 rawNormal, float4 specInfo)
+@@ -980,6 +1022,16 @@
+     if (SSRDisplayMode == 18)
+         return float4(saturate(specInfo.rgb * 32.0), 1.0);
+ 
++    if (SSRDisplayMode == 19)
++    {
++        float d = GetRawDepth(uv);
++        if (IsBackgroundDepth(d))
++            return float4(0.0, 0.0, 0.0, 1.0);
++
++        float m = (!pbr && LegacyUsesDielectricFallback(rawNormal, specInfo)) ? 1.0 : 0.0;
++        return float4(m.xxx, 1.0);
++    }
++
+     if (!SSRReady())
+         return color;
+ 
+@@ -991,10 +1043,10 @@
+     float3 viewPos = ReconstructViewPosition(uv, depth);
+     float fresnel = ViewFresnel(viewPos, normal);
+ 
+-    // PBR keeps the existing scalar roughness/metallic response. Legacy now
+-    // follows Firestorm's native material use more closely: alpha/glossiness
+-    // does not gate energy, and the reflected scene color is tinted by the
+-    // actual legacy specular RGB.
++    // PBR keeps the existing scalar roughness/metallic response. Legacy uses
++    // Firestorm's explicit specular RGB first, classic shiny/env second, and
++    // only then the small v0.14 neutral dielectric fallback. Alpha/glossiness
++    // remains metadata and does not gate SSR energy.
+     float materialWeight = pbr ? saturate(reflectivity) : 1.0;
+     float weight =
+         saturate(rawSSR.a) *
+@@ -1028,10 +1080,10 @@
+     return color;
+ }
+ 
+-technique SL_SSR_v0_13_LegacyRGBResponse
++technique SL_SSR_v0_14_LegacyDielectricFallback
+ <
+-    ui_label = "SL SSR v0.13 - Legacy RGB Response";
+-    ui_tooltip = "Uses the proven ReShade-published G-buffer. Legacy SSR now follows Firestorm specularRect RGB directly and no longer treats alpha/glossiness as a reflectivity gate.";
++    ui_label = "SL SSR v0.14 - Legacy Dielectric Fallback";
++    ui_tooltip = "Keeps explicit legacy specular/classic-shiny authoritative, but gives legacy surfaces with neither signal a small Fresnel-driven neutral dielectric SSR fallback. PBR is unchanged.";
+ >
+ {
+     pass Trace
