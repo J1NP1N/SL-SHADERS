@@ -8,9 +8,11 @@ This file exists so a fresh ChatGPT conversation can resume the project without 
 
 **SSR v0.8 SourceProof / SLProbeLighting v1.6.6**
 
-Current install/test package:
+Current install/test package name:
 
 `SL_SSR_v0_8_SourceProof.zip`
+
+The exact recovered ZIP is preserved in the ChatGPT Library/recovery set. The GitHub connector truncated the attempted large binary upload, so the invalid GitHub copy was removed. See `packages/RECOVERY_STATUS.md` for verified package storage status. Do not mistake “documented in GitHub” for “ZIP byte-valid in GitHub.”
 
 Current objective: prove the exact Firestorm `specularRect` material G-buffer payload and its lifetime/copy into ReShade. Do **not** tune SSR reflection strength, weighting, roughness response, or appearance until this is proven.
 
@@ -75,17 +77,20 @@ Native SSR specular matches soften-light source...
 - **source RGB good + snapshot RGB bad** -> copy/snapshot path problem.
 - **source RGB zero on a known material target** -> wrong source/draw identification, wrong timing, or an incorrect material-contract assumption.
 
-## New upstream source finding worth retaining
+## Upstream source finding worth retaining
 
-At the currently inspected Firestorm commit `f0d4a81c5ded331fb35d19e88544f0d22723bee5`, Firestorm itself contains the same current `screenSpaceReflPostF.glsl` structure found in Black Dragon commit `b2ca434b39bcd93aff0e23414999dddd73527e05`.
+Pinned current audit:
 
-That shader directly samples `specularRect`. For non-PBR pixels it uses `specularRect.rgb` as specular color. If the normal/G-buffer flag says PBR, it interprets `specularRect.rgb` as ORM, taking roughness from G and metallic from B, then derives specular F0 from base color/metallicity.
+- Firestorm `f0d4a81c5ded331fb35d19e88544f0d22723bee5`
+- Black Dragon `b2ca434b39bcd93aff0e23414999dddd73527e05`
 
-This reinforces the v0.8 strategy: **capture the authoritative attachment rather than reconstructing material response later.** See `UPSTREAM_RENDERER_NOTES.md` for pinned paths and exact contracts.
+At those commits, Firestorm and Black Dragon contain materially the same `screenSpaceReflPostF.glsl` material interpretation. The shader directly samples `specularRect`. For non-PBR pixels it uses `specularRect.rgb` as specular color. For PBR, it interprets RGB as ORM: roughness = G, metallic = B, with specular F0 derived from base color/metallicity.
+
+This reinforces the v0.8 strategy: **capture the authoritative attachment rather than reconstructing material response later.** See `docs/UPSTREAM_RENDERER_NOTES.md` for pinned paths and reusable renderer contracts.
 
 ## Other recovered work — not the active task
 
-These are preserved checkpoints, not necessarily what should be edited next:
+These are recovered checkpoints, not automatically what should be edited next:
 
 - HybridGI: v0.14 BalancedAreaTemporal.
 - HBAO: v0.5 SmoothAO.
@@ -97,7 +102,7 @@ These are preserved checkpoints, not necessarily what should be edited next:
 - iMMERSE Firestorm Native integration: v0.6 RawAOAlphaReceiver.
 - Firestorm standard DEPTH override: v0.2.1 historical SLProbeLighting infrastructure milestone.
 
-The recovered prior `SL_Firestorm_Render_Extensions` Git history contains the HybridGI temporal/depth work through v0.14. Preserve it; do not flatten it into new history.
+A real prior `SL_Firestorm_Render_Extensions` Git history was recovered with 12 original commits through the HybridGI v0.14 / Firestorm DEPTH work. Its commit inventory is stored under `history/`. Do not flatten that into invented history.
 
 ## Runtime-development rules
 
@@ -107,8 +112,9 @@ The recovered prior `SL_Firestorm_Render_Extensions` Git history contains the Hy
 4. Debug screens/readouts are mandatory for experimental renderer work.
 5. Our relationship is build -> user runs real Firestorm -> reports screenshots/readouts/errors -> next revision.
 6. Never infer a renderer stage works merely because a semantic is bound.
-7. New versions must have unambiguous visible version/technique identifiers; we previously lost time because an older ReShade technique was still running.
-8. Whenever a test changes the conclusion, update this file in the same Git commit as the code/status change.
+7. New versions must have unambiguous visible version/technique identifiers; an older ReShade technique previously remained active during a supposed newer test.
+8. Never call a GitHub package backed up until byte count/checksum is verified.
+9. Whenever a test changes the conclusion, update this file in the same Git commit as the code/status change.
 
 ## Fresh-chat bootstrap
 
@@ -116,7 +122,8 @@ A new chat should read, in this order:
 
 1. `docs/HANDOFF.md` — current state and next action.
 2. `README.md` — project/install rules and subsystem index.
-3. `docs/UPSTREAM_RENDERER_NOTES.md` — already-audited Firestorm/Black Dragon facts.
-4. The README/source for the active package only.
+3. `packages/RECOVERY_STATUS.md` — what artifacts are actually verified remotely.
+4. `docs/UPSTREAM_RENDERER_NOTES.md` — already-audited Firestorm/Black Dragon facts.
+5. The active package/source only if needed for the next code change.
 
-Do not ask the user to retell the old conversation unless one of these files is demonstrably missing the needed runtime result.
+Do not ask the user to retell the old conversation unless these files are demonstrably missing the needed runtime result.
