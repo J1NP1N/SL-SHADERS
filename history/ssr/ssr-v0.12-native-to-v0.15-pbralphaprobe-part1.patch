@@ -1,0 +1,448 @@
+--- a/SLProbeLighting.cpp
++++ b/SLProbeLighting.cpp
+@@ -68,6 +68,13 @@
+     constexpr GLenum GL_RED_VALUE = 0x1903;
+     constexpr GLenum GL_FLOAT_VALUE = 0x1406;
+ 
++    // v0.15 PBRAlphaProbe: identify Firestorm's forward PBR alpha draws from
++    // the PBR uniform/sampler signature plus its standard alpha blend state.
++    constexpr GLenum GL_BLEND_SRC_RGB_VALUE = 0x80C9;
++    constexpr GLenum GL_BLEND_DST_RGB_VALUE = 0x80C8;
++    constexpr GLenum GL_SRC_ALPHA_VALUE = 0x0302;
++    constexpr GLenum GL_ONE_MINUS_SRC_ALPHA_VALUE = 0x0303;
++
+     // v0.9 ReadProof: identify the attachment's real numeric format so an
+     // all-zero readback cannot be silently mistaken for a genuine zero payload.
+     constexpr GLenum GL_FRAMEBUFFER_ATTACHMENT_COMPONENT_TYPE_VALUE = 0x8211;
+@@ -488,6 +495,30 @@
+         uint64_t capture_count = 0;
+     };
+ 
++    struct pbr_alpha_draw_capture
++    {
++        bool valid = false;
++        GLuint program = 0;
++        texture_capture base_color;
++        texture_capture normal;
++        texture_capture orm;
++        texture_capture emissive;
++        texture_capture scene_target;
++        float metallic_factor = 0.0f;
++        float roughness_factor = 0.0f;
++        GLint viewport[4] = { 0, 0, 0, 0 };
++        bool viewport_valid = false;
++        GLint blend_src_rgb = 0;
++        GLint blend_dst_rgb = 0;
++    };
++
++    struct pbr_alpha_snapshot_capture
++    {
++        bool valid = false;
++        texture_capture before;
++        texture_capture after;
++    };
++
+ 
+     struct sampled_channel_stats
+     {
+@@ -594,6 +625,35 @@
+         uint64_t frame_specular_draws_seen = 0;
+         uint64_t frame_specular_draws_gated_in = 0;
+ 
++        // v0.15 PBRAlphaProbe. PBR BLEND surfaces are forward-rendered after
++        // the deferred G-buffer. Snapshot the scene immediately before/after
++        // the first contiguous PBR-alpha segment; their difference is a spatial
++        // proof mask for the forward material path.
++        GLuint pbr_alpha_before_texture = 0;
++        GLuint pbr_alpha_after_texture = 0;
++        GLuint pbr_alpha_read_fbo = 0;
++        uint32_t pbr_alpha_width = 0;
++        uint32_t pbr_alpha_height = 0;
++        bool pbr_alpha_segment_active = false;
++        bool pbr_alpha_pair_ready = false;
++        GLuint pbr_alpha_segment_target = 0;
++        uint64_t pbr_alpha_snapshot_count = 0;
++
++        uint64_t frame_pbr_alpha_draws = 0;
++        uint64_t last_pbr_alpha_draws = 0;
++        GLuint frame_pbr_alpha_program = 0;
++        GLuint last_pbr_alpha_program = 0;
++        GLuint frame_pbr_alpha_base = 0;
++        GLuint last_pbr_alpha_base = 0;
++        GLuint frame_pbr_alpha_orm = 0;
++        GLuint last_pbr_alpha_orm = 0;
++        GLuint frame_pbr_alpha_normal = 0;
++        GLuint last_pbr_alpha_normal = 0;
++        float frame_pbr_alpha_metallic = 0.0f;
++        float last_pbr_alpha_metallic = 0.0f;
++        float frame_pbr_alpha_roughness = 0.0f;
++        float last_pbr_alpha_roughness = 0.0f;
++
+         // Detect Firestorm's own native SSR post draw. Black Dragon executes
+         // the same shader against specularRect/diffuseRect/diffuseMap. Matching
+         // texture IDs proves whether our soften-light capture is the exact
+@@ -683,6 +743,10 @@
+         api::resource specular_resource = { 0 };
+         api::resource_view specular_view = { 0 };
+ 
++        // v0.15: ReShade-owned copy of the PBR-alpha path-difference mask.
++        api::resource pbr_alpha_mask_resource = { 0 };
++        api::resource_view pbr_alpha_mask_view = { 0 };
++
+         api::resource_desc desc = {};
+ 
+         GLuint fbo = 0;
+@@ -702,6 +766,7 @@
+         bool diffuse_response_semantic_bound = false;
+         bool scene_linear_semantic_bound = false;
+         bool specular_semantic_bound = false;
++        bool pbr_alpha_mask_semantic_bound = false;
+         bool rendered_last_pass = false;
+ 
+         uint64_t render_count = 0;
+@@ -1564,6 +1629,295 @@
+         state.specular_proof = proof;
+     }
+ 
++
++    bool ensure_pbr_alpha_snapshot_storage(
++        device_state &state,
++        uint32_t width,
++        uint32_t height)
++    {
++        if (state.pbr_alpha_before_texture != 0 &&
++            state.pbr_alpha_after_texture != 0 &&
++            state.pbr_alpha_read_fbo != 0 &&
++            state.pbr_alpha_width == width &&
++            state.pbr_alpha_height == height)
++            return true;
++
++        if (state.pbr_alpha_before_texture != 0)
++        {
++            glDeleteTextures(1, &state.pbr_alpha_before_texture);
++            state.pbr_alpha_before_texture = 0;
++        }
++
++        if (state.pbr_alpha_after_texture != 0)
++        {
++            glDeleteTextures(1, &state.pbr_alpha_after_texture);
++            state.pbr_alpha_after_texture = 0;
++        }
++
++        if (state.pbr_alpha_read_fbo != 0 &&
++            p_glDeleteFramebuffers != nullptr)
++        {
++            p_glDeleteFramebuffers(1, &state.pbr_alpha_read_fbo);
++            state.pbr_alpha_read_fbo = 0;
++        }
++
++        GLint previous_active_texture = 0;
++        glGetIntegerv(GL_ACTIVE_TEXTURE_VALUE, &previous_active_texture);
++        p_glActiveTexture(GL_TEXTURE0_VALUE + 13);
++
++        GLint previous_texture = 0;
++        glGetIntegerv(GL_TEXTURE_BINDING_2D_VALUE, &previous_texture);
++
++        auto create_snapshot_texture =
++            [&](GLuint &texture) -> bool
++            {
++                glGenTextures(1, &texture);
++                if (texture == 0)
++                    return false;
++
++                glBindTexture(GL_TEXTURE_2D_VALUE, texture);
++                glTexParameteri(GL_TEXTURE_2D_VALUE, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
++                glTexParameteri(GL_TEXTURE_2D_VALUE, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
++                glTexImage2D(
++                    GL_TEXTURE_2D_VALUE,
++                    0,
++                    static_cast<GLint>(GL_RGBA16F_VALUE),
++                    static_cast<GLsizei>(width),
++                    static_cast<GLsizei>(height),
++                    0,
++                    GL_RGBA_VALUE,
++                    GL_FLOAT_VALUE,
++                    nullptr);
++                return true;
++            };
++
++        const bool textures_ok =
++            create_snapshot_texture(state.pbr_alpha_before_texture) &&
++            create_snapshot_texture(state.pbr_alpha_after_texture);
++
++        glBindTexture(
++            GL_TEXTURE_2D_VALUE,
++            previous_texture > 0 ? static_cast<GLuint>(previous_texture) : 0);
++        p_glActiveTexture(static_cast<GLenum>(previous_active_texture));
++
++        if (!textures_ok)
++        {
++            if (state.pbr_alpha_before_texture != 0)
++            {
++                glDeleteTextures(1, &state.pbr_alpha_before_texture);
++                state.pbr_alpha_before_texture = 0;
++            }
++            if (state.pbr_alpha_after_texture != 0)
++            {
++                glDeleteTextures(1, &state.pbr_alpha_after_texture);
++                state.pbr_alpha_after_texture = 0;
++            }
++            return false;
++        }
++
++        p_glGenFramebuffers(1, &state.pbr_alpha_read_fbo);
++        if (state.pbr_alpha_read_fbo == 0)
++            return false;
++
++        state.pbr_alpha_width = width;
++        state.pbr_alpha_height = height;
++        return true;
++    }
++
++    bool copy_color_texture_to_snapshot(
++        GLuint source_texture,
++        GLuint destination_texture,
++        GLuint read_fbo,
++        uint32_t width,
++        uint32_t height)
++    {
++        if (source_texture == 0 ||
++            destination_texture == 0 ||
++            read_fbo == 0 ||
++            width == 0 ||
++            height == 0)
++            return false;
++
++        GLint previous_read_fbo = 0;
++        GLint previous_active_texture = 0;
++        glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING_VALUE, &previous_read_fbo);
++        glGetIntegerv(GL_ACTIVE_TEXTURE_VALUE, &previous_active_texture);
++
++        p_glActiveTexture(GL_TEXTURE0_VALUE + 13);
++        GLint previous_texture = 0;
++        glGetIntegerv(GL_TEXTURE_BINDING_2D_VALUE, &previous_texture);
++
++        p_glBindFramebuffer(GL_READ_FRAMEBUFFER_VALUE, read_fbo);
++        p_glFramebufferTexture2D(
++            GL_READ_FRAMEBUFFER_VALUE,
++            GL_COLOR_ATTACHMENT0_VALUE,
++            GL_TEXTURE_2D_VALUE,
++            source_texture,
++            0);
++
++        const bool complete =
++            p_glCheckFramebufferStatus(GL_READ_FRAMEBUFFER_VALUE) ==
++            GL_FRAMEBUFFER_COMPLETE_VALUE;
++
++        bool copied = false;
++        if (complete)
++        {
++            glReadBuffer(GL_COLOR_ATTACHMENT0_VALUE);
++            glBindTexture(GL_TEXTURE_2D_VALUE, destination_texture);
++            glCopyTexSubImage2D(
++                GL_TEXTURE_2D_VALUE,
++                0, 0, 0, 0, 0,
++                static_cast<GLsizei>(width),
++                static_cast<GLsizei>(height));
++            copied = true;
++        }
++
++        glBindTexture(
++            GL_TEXTURE_2D_VALUE,
++            previous_texture > 0 ? static_cast<GLuint>(previous_texture) : 0);
++        p_glActiveTexture(static_cast<GLenum>(previous_active_texture));
++        p_glBindFramebuffer(
++            GL_READ_FRAMEBUFFER_VALUE,
++            previous_read_fbo > 0 ? static_cast<GLuint>(previous_read_fbo) : 0);
++
++        return copied;
++    }
++
++    bool inspect_pbr_alpha_draw(
++        api::device *device,
++        pbr_alpha_draw_capture &candidate)
++    {
++        candidate = {};
++
++        if (!glIsEnabled(GL_BLEND))
++            return false;
++
++        GLint blend_src_rgb = 0;
++        GLint blend_dst_rgb = 0;
++        glGetIntegerv(GL_BLEND_SRC_RGB_VALUE, &blend_src_rgb);
++        glGetIntegerv(GL_BLEND_DST_RGB_VALUE, &blend_dst_rgb);
++
++        if (blend_src_rgb != static_cast<GLint>(GL_SRC_ALPHA_VALUE) ||
++            blend_dst_rgb != static_cast<GLint>(GL_ONE_MINUS_SRC_ALPHA_VALUE))
++            return false;
++
++        GLint raw_program = 0;
++        glGetIntegerv(GL_CURRENT_PROGRAM_VALUE, &raw_program);
++        if (raw_program <= 0)
++            return false;
++
++        const GLuint program = static_cast<GLuint>(raw_program);
++
++        texture_capture base_color = {};
++        texture_capture normal = {};
++        texture_capture orm = {};
++        texture_capture emissive = {};
++
++        if (!read_sampler_2d(device, program, "diffuseMap", base_color) ||
++            !read_sampler_2d(device, program, "bumpMap", normal) ||
++            !read_sampler_2d(device, program, "specularMap", orm) ||
++            !read_sampler_2d(device, program, "emissiveMap", emissive))
++            return false;
++
++        float metallic_factor = 0.0f;
++        float roughness_factor = 0.0f;
++        if (!read_float_uniform(program, "metallicFactor", &metallic_factor, 1) ||
++            !read_float_uniform(program, "roughnessFactor", &roughness_factor, 1))
++            return false;
++
++        texture_capture scene_target = {};
++        if (!read_draw_color_attachment(device, scene_target) ||
++            !scene_target.texture_bound ||
++            !scene_target.desc_valid ||
++            scene_target.texture == 0 ||
++            scene_target.desc.type != api::resource_type::texture_2d)
++            return false;
++
++        GLint viewport[4] = {};
++        glGetIntegerv(GL_VIEWPORT, viewport);
++        const bool viewport_valid = viewport[2] > 1 && viewport[3] > 1;
++
++        candidate.valid =
++            viewport_valid &&
++            base_color.texture_bound &&
++            normal.texture_bound &&
++            orm.texture_bound &&
++            emissive.texture_bound;
++
++        if (!candidate.valid)
++            return false;
++
++        candidate.program = program;
++        candidate.base_color = base_color;
++        candidate.normal = normal;
++        candidate.orm = orm;
++        candidate.emissive = emissive;
++        candidate.scene_target = scene_target;
++        candidate.metallic_factor = metallic_factor;
++        candidate.roughness_factor = roughness_factor;
++        candidate.viewport_valid = true;
++        candidate.blend_src_rgb = blend_src_rgb;
++        candidate.blend_dst_rgb = blend_dst_rgb;
++        std::memcpy(candidate.viewport, viewport, sizeof(viewport));
++        return true;
++    }
++
++    bool begin_pbr_alpha_segment(
++        device_state &state,
++        const pbr_alpha_draw_capture &candidate)
++    {
++        if (!candidate.valid ||
++            state.pbr_alpha_segment_active ||
++            state.pbr_alpha_pair_ready ||
++            !candidate.scene_target.desc_valid)
++            return false;
++
++        const uint32_t width = candidate.scene_target.desc.texture.width;
++        const uint32_t height = candidate.scene_target.desc.texture.height;
++
++        if (!ensure_pbr_alpha_snapshot_storage(state, width, height))
++            return false;
++
++        if (!copy_color_texture_to_snapshot(
++                candidate.scene_target.texture,
++                state.pbr_alpha_before_texture,
++                state.pbr_alpha_read_fbo,
++                width,
++                height))
++            return false;
++
++        state.pbr_alpha_segment_active = true;
++        state.pbr_alpha_segment_target = candidate.scene_target.texture;
++        return true;
++    }
++
++    bool finish_pbr_alpha_segment(device_state &state)
++    {
++        if (!state.pbr_alpha_segment_active ||
++            state.pbr_alpha_segment_target == 0 ||
++            state.pbr_alpha_pair_ready)
++            return false;
++
++        const bool copied =
++            copy_color_texture_to_snapshot(
++                state.pbr_alpha_segment_target,
++                state.pbr_alpha_after_texture,
++                state.pbr_alpha_read_fbo,
++                state.pbr_alpha_width,
++                state.pbr_alpha_height);
++
++        state.pbr_alpha_segment_active = false;
++        state.pbr_alpha_segment_target = 0;
++
++        if (copied)
++        {
++            state.pbr_alpha_pair_ready = true;
++            state.pbr_alpha_snapshot_count++;
++        }
++
++        return copied;
++    }
++
+     bool inspect_native_ssr_draw(
+         api::device *device,
+         GLuint &program_out,
+@@ -2553,6 +2907,10 @@
+             return;
+ 
+         probe_capture candidate = {};
++        pbr_alpha_draw_capture pbr_alpha_candidate = {};
++
++        const bool pbr_alpha_ok =
++            inspect_pbr_alpha_draw(device, pbr_alpha_candidate);
+ 
+         {
+             std::lock_guard<std::mutex> lock(
+@@ -2560,6 +2918,38 @@
+ 
+             state->draws_examined++;
+ 
++            // v0.15: draw events are observed before the application draw.
++            // Close the previous PBR-alpha segment before a different draw
++            // modifies the scene target.
++            if (state->pbr_alpha_segment_active)
++            {
++                const bool same_segment =
++                    pbr_alpha_ok &&
++                    pbr_alpha_candidate.scene_target.texture ==
++                        state->pbr_alpha_segment_target;
++
++                if (!same_segment)
++                    finish_pbr_alpha_segment(*state);
++            }
++
++            if (pbr_alpha_ok)
++            {
++                state->frame_pbr_alpha_draws++;
++                state->frame_pbr_alpha_program = pbr_alpha_candidate.program;
++                state->frame_pbr_alpha_base = pbr_alpha_candidate.base_color.texture;
++                state->frame_pbr_alpha_orm = pbr_alpha_candidate.orm.texture;
++                state->frame_pbr_alpha_normal = pbr_alpha_candidate.normal.texture;
++                state->frame_pbr_alpha_metallic = pbr_alpha_candidate.metallic_factor;
++                state->frame_pbr_alpha_roughness = pbr_alpha_candidate.roughness_factor;
++
++                // First contiguous segment only: this revision proves the path.
++                if (!state->pbr_alpha_segment_active &&
++                    !state->pbr_alpha_pair_ready)
++                {
++                    begin_pbr_alpha_segment(*state, pbr_alpha_candidate);
++                }
++            }
++
+             // Once the selected soften-light target has finished accumulating
+             // the 3D scene, freeze it immediately before Firestorm's first
+             // postprocess draw samples that target. This keeps the snapshot in
