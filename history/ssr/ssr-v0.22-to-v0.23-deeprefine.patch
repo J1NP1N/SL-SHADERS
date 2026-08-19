@@ -1,0 +1,43 @@
+--- v0.22/SL_SSR_v0_1_LegacyFirst.fx
++++ v0.23/SL_SSR_v0_1_LegacyFirst.fx
+@@ -1,7 +1,7 @@
+-// SL_SSR_v0_22_CrossingPath.fx
++// SL_SSR_v0_23_DeepRefine.fx
+ // Firestorm-native-data screen-space reflections for ReShade.
+ //
+-// v0.22 lineage / current goals:
++// v0.23 lineage / current goals:
+ //   - legacy SL materials first
+ //   - exact Firestorm SL_DEPTH + SL_NORMALS
+ //   - exact Firestorm projection/inverse projection from SLProbeLighting
+@@ -22,6 +22,7 @@
+ //   - recover background-to-geometry silhouette entries that cannot form a normal depth sign pair
+ //   - classify BLUE/no-hit rays by the depth samples they actually observed
+ //   - classify mixed-sign no-hit rays by actual crossing-candidate path
++//   - deepen binary refinement so valid silhouette crossings are not misclassified oversized
+ //   - limited skip-through for oversized foreground disocclusion crossings
+ //   - diagnostic classification of every geometry-trace rejection path
+ //
+@@ -39,7 +40,7 @@
+ #include "ReShade.fxh"
+ 
+ #define SL_SSR_MAX_STEPS 48
+-#define SL_SSR_BINARY_STEPS 5
++#define SL_SSR_BINARY_STEPS 9
+ 
+ // -----------------------------------------------------------------------------
+ // Firestorm bridge registration / exact matrices
+@@ -1407,10 +1408,10 @@
+     return color;
+ }
+ 
+-technique SL_SSR_v0_22_CrossingPath
++technique SL_SSR_v0_23_DeepRefine
+ <
+-    ui_label = "SL SSR v0.22 - Crossing Path";
+-    ui_tooltip = "Diagnostic v0.22 preserves the known-good disocclusion skip path and classifies mixed-sign no-hit rays by actual crossing-candidate behavior: positive-to-negative only, oversized/skipped negative-to-positive candidates, or other refinement failure.";
++    ui_label = "SL SSR v0.23 - Deep Refine";
++    ui_tooltip = "v0.23 keeps the proven crossing-path diagnostics and increases binary hit refinement from 5 to 9 iterations. This tests whether the avatar-shaped ORANGE holes are legitimate crossings that were simply under-refined before the thickness test.";
+ >
+ {
+     pass Trace
