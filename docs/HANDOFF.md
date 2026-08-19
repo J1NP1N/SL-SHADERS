@@ -2,113 +2,131 @@
 
 Last updated: 2026-08-19
 
-This file exists so a fresh ChatGPT conversation can resume the project without reconstructing prior chat history. Update it whenever the active build, proven facts, current failure, or requested runtime test changes.
+This is the live project checkpoint. Update it whenever the active build, proven facts, current failure, or requested runtime test changes.
 
 ## Current focus
 
-**SSR material-source proof is complete. Firestorm `specularRect` capture is proven.**
+**Firestorm `specularRect` acquisition is proven. The active problem is ReShade-side publication/consumption of those proven bytes.**
 
-Active recovered checkpoint: **SLProbeLighting v1.6.8 / SSR v0.10 MainPassGate**.
+Current test build: **SLProbeLighting v1.6.10 / SSR v0.12 ReShadePublish**.
 
-Recovered source commit: `dd7022c80e0acf89295b11bda00ee788ae10d166`.
+Runtime status:
 
-The exact v0.10 source is currently preserved in the uploaded recovery patch/bundle, not yet as normal browsable source files on GitHub `main`. Do not regress the project state to v0.8 merely because the large source import has not yet been transferred through the connector.
+- v0.10 MainPassGate: **PASS** — authoritative full-resolution main-pass `specularRect` capture and private snapshot copy proven.
+- v0.11 MainPassConsume: **FAIL, but informative** — the gated main-pass snapshot was selected as the FX source, while `Display Mode -> G-buffer specular RGB` still sampled black.
+- v0.12 ReShadePublish: **PENDING RUNTIME** — publishes the proven snapshot through a ReShade-owned RGBA16F target instead of borrowing the private/native GL texture directly.
 
-Do not resume SSR strength/weight/roughness/appearance tuning yet. The immediate next step is to confirm whether the proven bytes are being classified as legacy or PBR by the FX.
+Do **not** resume SSR strength/weight/roughness tuning until v0.12 proves that the FX can visibly sample the material payload.
 
-## What is now proven at runtime
+## What is proven at runtime
 
 - Firestorm/ReShade registration and projection data work.
+- Compatibility DEPTH works.
 - `SL_SCENE_LINEAR` contains valid world scene color.
 - SSR ray-hit geometry works.
 - Raw reflected hit color contains real scene color.
-- **v0.10 proves the authoritative main-pass material G-buffer capture and private snapshot copy.**
+- The authoritative main-pass material G-buffer can be identified and read.
+- The private main-pass specular snapshot is an accurate copy of that source.
 
-The decisive v0.10 run on a red-specular legacy test object reported:
+The decisive v0.10 proof selected:
 
-- `Source-proof sample: tex 8, 3840 x 2027` — full-resolution main deferred pass, not the 512x512 probe pass.
+- `Source-proof sample: tex 8, 3840 x 2027` — full-resolution main deferred pass, not the 512x512 probe-space pass.
 - `source read: OK`, `glError 0x0000`.
-- `componentType 0x8C17 (UNSIGNED_NORMALIZED)`, `redBits 8` — normal RGBA8-style material attachment.
-- center material values approximately `R 0.98 / G 0.60 / B 0.017 / A 0` with RGB nonzero across the sampled center block.
-- snapshot statistics matched the source, proving the private copy path as well.
+- `componentType 0x8C17 (UNSIGNED_NORMALIZED)`, `redBits 8`.
+- nonzero RGB in the center block over the material test object.
+- snapshot statistics matched source statistics.
 
-Conclusion: the long-standing black material diagnostic was **not** caused by a broken bridge, source read, or snapshot copy.
+The latest v0.11 runtime screenshot independently reconfirmed the same acquisition path: full-resolution `tex 8, 3840 x 2027`, clean read, nonzero source/snapshot RGB, and overlay source `GATED MAIN-PASS SNAPSHOT`.
 
-## Root cause fixed in v0.9 -> v0.10
+Conclusion: **the black FX diagnostic is not an acquisition, readback, or private snapshot-copy failure.**
+
+## Root-cause chain
 
 ### v0.9 ReadProof
 
-The analyzer added explicit read success, `glGetError`, attachment component type/red-bit depth, dimensions, and center-block statistics.
-
-That exposed the actual fault: the analyzer was reading `tex 14, 512 x 512`, a probe-space deferred pass, while the real main-pass `specularRect` existed at full resolution (`tex 8, 3840 x 2027` in the proven run).
-
-Firestorm issues several authoritative deferred/probe-related draws per frame at the same `refmapCount`. Therefore `refmapCount` alone cannot distinguish 512x512 probe-space passes from the full-resolution main pass.
+Added explicit read success, GL error, attachment numeric format, dimensions, and sampled channel statistics. This exposed that earlier analysis was reading a `512 x 512` probe-space deferred pass instead of the full-resolution main pass.
 
 ### v0.10 MainPassGate
 
-v0.10 gates the source-proof freeze/analyze path to the full-resolution main pass using a self-calibrating height rule: accept candidate specular draws at >= 75% of the tallest specular draw observed.
+Added a self-calibrating full-resolution gate: candidate specular draws are accepted for source proof at >=75% of the tallest observed specular draw. Runtime selected the `3840 x 2027` main pass and proved nonzero material bytes plus a matching private snapshot.
 
-This rejects 512-tall probe passes once the ~2027-tall main draw is known without hardcoding the user's resolution.
+This closed the old "black specular capture" investigation.
 
-It also fixes the snapshot proof read so the snapshot is sampled using the snapshot's own dimensions rather than the source texture's dimensions.
+### v0.11 MainPassConsume
 
-The FX itself is unchanged from v0.8 through v0.10; these fixes are in the native add-on.
+Changed `SL_GBUFFER_SPECULAR` source priority so the v0.10-proven gated private snapshot was authoritative and the older direct/current attachment became fallback only.
+
+Runtime result:
+
+- overlay: `SL_GBUFFER_SPECULAR FX source: GATED MAIN-PASS SNAPSHOT`
+- source/snapshot analysis: valid and nonzero
+- FX `G-buffer specular RGB`: **black**
+
+Interpretation: a borrowed private/native GL texture could report semantic-bound while the FX still sampled black. Semantic-bound is therefore not sufficient proof of shader-visible payload.
+
+Source delta commit: `018a21b4bd441b53526f7dc4ee22fd7320fd76be`.
+
+### v0.12 ReShadePublish — current
+
+The bridge now copies all four material channels into a **ReShade-owned RGBA16F render target** and binds that owned view as `SL_GBUFFER_SPECULAR`.
+
+This deliberately mirrors the ownership model already used by the working `SL_SCENE_LINEAR` publication path.
+
+Preserved material contract:
+
+- legacy: `RGB = specular color`, `A = glossiness`
+- PBR: `RGB = occlusion / roughness / metallic`
+
+SSR weighting is unchanged. This build tests publication only.
+
+Source delta commit: `eede4fd47b8284b3b7bf973c2d082da4825f153f`.
 
 ## Next runtime step
 
-On the same red-specular object, report these two diagnostic views:
+Run **v0.12 ReShadePublish** on the same material test scene.
 
-```text
-Material class: legacy cyan / PBR magenta
-Bridge status
-```
+Return:
 
-Healthy bridge status is cyan.
+1. overlay screenshot showing:
+   - `SL_GBUFFER_SPECULAR input source: GATED MAIN-PASS SNAPSHOT`
+   - `SL_GBUFFER_SPECULAR FX publication: RESHADE-OWNED COPY`
+   - `SL_GBUFFER_SPECULAR semantic bound: YES`
+2. `Display Mode -> G-buffer specular RGB`
+
+Do **not** press Analyze unless new numeric source proof is specifically requested. Analyze is manual CPU instrumentation and is independent of FX publication.
 
 Interpretation:
 
-- **Material class = cyan (legacy):** next work verifies that the FX consumes the now-proven `specularRect` under the legacy interpretation and then resumes SSR weighting/appearance.
-- **Material class = magenta (PBR):** the captured bytes are being interpreted as ORM; investigate material classification before appearance tuning.
+- **non-black G-buffer specular RGB:** publication is fixed; move to material-class interpretation and then SSR response/weighting.
+- **black G-buffer specular RGB with RESHADE-OWNED COPY + semantic YES:** numerically inspect the ReShade-owned publication target itself before changing SSR weighting.
 
-The captured `R≈0.98, G≈0.60, B≈0.017, A=0` is plausibly a red legacy specular response, but its shape can also resemble PBR ORM (`R=occlusion`, `G=roughness`, `B=metallic`). Runtime class diagnostic decides this; do not infer it from RGB alone.
+## Material interpretation retained from upstream audit
 
-## Prior diagnostic progression worth retaining
+Pinned source audit is stored in `docs/UPSTREAM_RENDERER_NOTES.md`.
 
-**v0.5:** yellow bridge status meant scene-linear was valid while G-buffer specular was invalid; SSR was gated before ray tracing.
+Firestorm commit: `f0d4a81c5ded331fb35d19e88544f0d22723bee5`.
 
-**v0.6 SnapshotTimingFix:** kept the snapshot alive until ReShade consumed it, removed unreliable `glGetError()` as copy-success predicate, and made ray-hit/raw-hit diagnostics independent of material validity. Runtime proved ray geometry and scene-color transport.
+Black Dragon commit: `b2ca434b39bcd93aff0e23414999dddd73527e05`.
 
-**v0.7 DirectGBuffer:** bound the live Firestorm specular attachment directly, but binding alone did not prove the payload was the correct draw.
+At those revisions, native SSR samples `specularRect` directly and branches by the normal-buffer PBR flag:
 
-**v0.8 SourceProof:** added numeric source/snapshot analysis. The later v0.9/v0.10 work showed that prior zero reads were clean reads of the wrong 512x512 probe-space draw.
+- legacy uses `specularRect.rgb` as specular color;
+- PBR interprets RGB as ORM and derives specular response from ORM plus base color.
 
-## Upstream renderer contract retained
+Do not infer legacy/PBR classification from RGB shape alone. Use the actual G-buffer flag diagnostic after publication is proven.
 
-Pinned source audit already stored in `docs/UPSTREAM_RENDERER_NOTES.md`:
+## Source/recovery bookkeeping
 
-- Firestorm `f0d4a81c5ded331fb35d19e88544f0d22723bee5`
-- Black Dragon `b2ca434b39bcd93aff0e23414999dddd73527e05`
+Original recovered v0.10 source commit: `dd7022c80e0acf89295b11bda00ee788ae10d166`.
 
-At those revisions, both native SSR shaders directly sample `specularRect` and branch material interpretation by PBR flag. Legacy uses specular RGB; PBR interprets RGB as ORM.
+Recovery artifacts:
 
-## Recovery artifact for v0.10
+- `SL-SHADERS_ssr-v0.10-mainpassgate.patch` — 282,690 bytes — SHA-256 `a855700f61e81fc1323037c370cdaffc29b8d3a78639a6e59b36fdc1c49cff57`
+- `SL-SHADERS_ssr-v0.10-mainpassgate.bundle` — 66,505 bytes — SHA-256 `c750b2a7d8306b9067528a095653b273ca1b6f11c9bd3c0875bb94ffad22c217`
+- local v0.11 package SHA-256 `88562a49861abbb93ab3782b4e95ab6ac8b7dd9a22b401cb6bf9038900c77345`
+- local v0.12 package SHA-256 `de71cbc0ada1faf2e6e4b6ee71619e04137cfeb28463dcb0ef3bd74768d2def0`
 
-Uploaded recovery artifacts:
-
-- patch: `SL-SHADERS_ssr-v0.10-mainpassgate.patch`
-  - 282,690 bytes
-  - SHA-256 `a855700f61e81fc1323037c370cdaffc29b8d3a78639a6e59b36fdc1c49cff57`
-- bundle: `SL-SHADERS_ssr-v0.10-mainpassgate.bundle`
-  - 66,505 bytes
-  - SHA-256 `c750b2a7d8306b9067528a095653b273ca1b6f11c9bd3c0875bb94ffad22c217`
-
-The bundle contains target commit `dd7022c80e0acf89295b11bda00ee788ae10d166` with parent `8c3cd8b68ac8fd1acd0fef3f83d77a4284ebda5a`. `git bundle verify` accepts the bundle metadata and the target commit object/source tree is recoverable. Fetching every advertised ref fails because its embedded `origin/main` advertises ancestry not fully included. Treat `dd7022c` plus the patch as the recovery target, not the embedded remote-tracking refs.
-
-## Other recovered work — not the active task
-
-Preserved checkpoints include HybridGI v0.14, HBAO v0.5, SSGI v0.3, SLNativeBridge v0.9a, SLProbeBridge v0.3b, SLVolumetricBridge v0.1d, UI separation v0.1, iMMERSE Firestorm Native v0.6, and the historical Firestorm DEPTH override v0.2.1.
-
-A real prior `SL_Firestorm_Render_Extensions` Git history was also recovered. Preserve the original commit graph; do not fabricate replacement history.
+The v0.11 and v0.12 **source deltas are now committed to GitHub** under `history/ssr/`. Their ZIP packages should not be described as remotely byte-verified unless separately uploaded and checksum-verified.
 
 ## Runtime-development rules
 
@@ -116,11 +134,11 @@ A real prior `SL_Firestorm_Render_Extensions` Git history was also recovered. Pr
 2. FX-only package = hot install; Firestorm may remain open.
 3. Native add-on/build package = Firestorm closed before install.
 4. Debug screens/readouts are mandatory for renderer experiments.
-5. Loop: build -> user runs real Firestorm -> reports screenshots/readouts/errors -> next revision.
-6. Never infer a renderer stage works merely because a semantic is bound. v0.10 is the case study: a cleanly bound/read semantic was still the wrong draw.
-7. New versions need unambiguous visible version identifiers.
-8. Never call a package remotely backed up until byte count/checksum is verified.
-9. When a runtime result changes the conclusion, update this handoff state.
+5. Loop: build -> commit source delta/checkpoint -> user runs real Firestorm -> report result -> update handoff -> next revision.
+6. A semantic being bound does not prove its shader-visible payload is correct.
+7. New versions require unambiguous visible version identifiers.
+8. Never call a binary package remotely backed up until byte count/checksum is independently verified.
+9. When a runtime result changes the conclusion, update this handoff immediately.
 
 ## Fresh-chat bootstrap
 
@@ -130,6 +148,6 @@ Read in order:
 2. `README.md`
 3. `packages/RECOVERY_STATUS.md`
 4. `docs/UPSTREAM_RENDERER_NOTES.md`
-5. active v0.10 source/recovery artifact only if the next code change requires it
+5. `history/ssr/` deltas for the active SSR chain
 
 Do not ask the user to reconstruct the old conversation when these records contain the needed state.
