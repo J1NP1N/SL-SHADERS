@@ -1,0 +1,183 @@
+--- v0.23/SL_SSR_v0_1_LegacyFirst.fx
++++ v0.24/SL_SSR_v0_1_LegacyFirst.fx
+@@ -1,7 +1,7 @@
+-// SL_SSR_v0_23_DeepRefine.fx
++// SL_SSR_v0_24_SilhouetteEdge.fx
+ // Firestorm-native-data screen-space reflections for ReShade.
+ //
+-// v0.23 lineage / current goals:
++// v0.24 lineage / current goals:
+ //   - legacy SL materials first
+ //   - exact Firestorm SL_DEPTH + SL_NORMALS
+ //   - exact Firestorm projection/inverse projection from SLProbeLighting
+@@ -22,6 +22,7 @@
+ //   - recover background-to-geometry silhouette entries that cannot form a normal depth sign pair
+ //   - classify BLUE/no-hit rays by the depth samples they actually observed
+ //   - classify mixed-sign no-hit rays by actual crossing-candidate path
++//   - recover terminal oversized candidates that converge onto a tight foreground silhouette edge
+ //   - deepen binary refinement so valid silhouette crossings are not misclassified oversized
+ //   - limited skip-through for oversized foreground disocclusion crossings
+ //   - diagnostic classification of every geometry-trace rejection path
+@@ -142,6 +143,38 @@
+     ui_min = 0.10; ui_max = 1.00; ui_step = 0.05;
+ > = 0.75;
+ 
++uniform int SSRSilhouetteEdgeRecovery
++<
++    ui_label = "Silhouette Edge Recovery";
++    ui_tooltip = "When the disocclusion skip budget is exhausted, allow a final oversized crossing only if refinement converges to a tight screen-space foreground depth discontinuity.";
++    ui_type = "slider";
++    ui_min = 0; ui_max = 1;
++> = 1;
++
++uniform float SSRSilhouetteEdgeConfidence
++<
++    ui_label = "Silhouette Edge Confidence";
++    ui_tooltip = "Confidence multiplier for hits recovered from the terminal silhouette-edge path.";
++    ui_type = "drag";
++    ui_min = 0.10; ui_max = 1.00; ui_step = 0.05;
++> = 0.60;
++
++uniform float SSRSilhouetteMinDepthJump
++<
++    ui_label = "Silhouette Min Depth Jump";
++    ui_tooltip = "Minimum view-space scene-depth jump required between the refined negative and positive sides.";
++    ui_type = "drag";
++    ui_min = 0.05; ui_max = 2.00; ui_step = 0.05;
++> = 0.25;
++
++uniform float SSRSilhouetteMaxPixelSpan
++<
++    ui_label = "Silhouette Max Pixel Span";
++    ui_tooltip = "Maximum full-resolution pixel separation between refined bracket endpoints for silhouette recovery.";
++    ui_type = "drag";
++    ui_min = 0.5; ui_max = 4.0; ui_step = 0.25;
++> = 2.0;
++
+ uniform int SSRDisocclusionSkips
+ <
+     ui_label = "Disocclusion Skips";
+@@ -283,7 +316,8 @@
+         "Background-entry recovered hit mask\0"
+         "No-hit depth history\0"
+         "No-hit closest depth delta\0"
+-        "No-hit crossing candidate path\0";
++        "No-hit crossing candidate path\0"
++        "Silhouette-edge recovered hit mask\0";
+ > = 0;
+ 
+ uniform float SSRDebugGain
+@@ -699,7 +733,8 @@
+     out float rejectReason,
+     out float noHitHistoryClass,
+     out float minAbsDepthDelta,
+-    out float crossingPathClass)
++    out float crossingPathClass,
++    out float silhouetteEdgeUsed)
+ {
+     hitUV = 0.0;
+     hitDistance = 0.0;
+@@ -709,6 +744,7 @@
+     noHitHistoryClass = 0.0;
+     minAbsDepthDelta = 1e6;
+     crossingPathClass = 0.0;
++    silhouetteEdgeUsed = 0.0;
+@@ -879,6 +915,62 @@
+                 continue;
+             }
+ 
++            // v0.24: only after the normal disocclusion skip budget has been
++            // exhausted, allow a terminal oversized candidate to become a hit
++            // when the refined bracket is a very tight screen-space transition
++            // into substantially nearer scene depth. This targets true reflected
++            // silhouette entries without replacing the existing skip behavior.
++            float3 loPosEdge = startPos + rayDir * lo;
++            float2 loUVEdge;
++            float loDeltaEdge;
++            bool loDepthValidEdge = EvaluateRayDepth(loPosEdge, loUVEdge, loDeltaEdge);
++            bool silhouetteEdgeHit = false;
++
++            if (SSRSilhouetteEdgeRecovery > 0 &&
++                finalDepthValid &&
++                finalDelta > SSRThickness &&
++                loDepthValidEdge &&
++                loDeltaEdge > -9e5 &&
++                loDeltaEdge < 0.0)
++            {
++                float rayDepthLo = -loPosEdge.z;
++                float rayDepthHi = -finalPos.z;
++                float sceneDepthLo = rayDepthLo - loDeltaEdge;
++                float sceneDepthHi = rayDepthHi - finalDelta;
++                float foregroundDepthJump = sceneDepthLo - sceneDepthHi;
++
++                float2 pixelSpan2 = abs(finalUV - loUVEdge) * float2(BUFFER_WIDTH, BUFFER_HEIGHT);
++                float pixelSpan = max(pixelSpan2.x, pixelSpan2.y);
++
++                silhouetteEdgeHit =
++                    foregroundDepthJump >= SSRSilhouetteMinDepthJump &&
++                    pixelSpan <= SSRSilhouetteMaxPixelSpan;
++            }
++
++            if (silhouetteEdgeHit)
++            {
++                hitUV = finalUV;
++                hitDistance = hi;
++                confidence =
++                    EdgeConfidence(finalUV) *
++                    DistanceConfidence(hi) *
++                    saturate(SSRSilhouetteEdgeConfidence);
++
++                silhouetteEdgeUsed = 1.0;
++                disocclusionUsed = 1.0;
++
++                if (confidence > 0.0)
++                {
++                    rejectReason = 0.0;
++                    crossingPathClass = 1.0;
++                    return true;
++                }
++
++                rejectReason = 5.0;
++                crossingPathClass = 5.0;
++                return false;
++            }
++
+             rejectReason = 4.0;
+             return false;
+         }
+@@ -1128,7 +1220,7 @@
+-    const bool geometryDebug = (SSRDisplayMode == 2 || SSRDisplayMode == 11 || SSRDisplayMode == 22 || SSRDisplayMode == 23 || SSRDisplayMode == 24 || SSRDisplayMode == 25 || SSRDisplayMode == 26 || SSRDisplayMode == 27);
++    const bool geometryDebug = (SSRDisplayMode == 2 || SSRDisplayMode == 11 || SSRDisplayMode == 22 || SSRDisplayMode == 23 || SSRDisplayMode == 24 || SSRDisplayMode == 25 || SSRDisplayMode == 26 || SSRDisplayMode == 27 || SSRDisplayMode == 28);
+@@ -1166,8 +1258,9 @@
+     float noHitHistoryClass;
+     float minAbsDepthDelta;
+     float crossingPathClass;
++    float silhouetteEdgeUsed;
+ 
+-    bool traceAccepted = TraceSSR(viewPos, normal, rayDir, hitUV, hitDistance, confidence, disocclusionUsed, backgroundEntryUsed, rejectReason, noHitHistoryClass, minAbsDepthDelta, crossingPathClass);
++    bool traceAccepted = TraceSSR(viewPos, normal, rayDir, hitUV, hitDistance, confidence, disocclusionUsed, backgroundEntryUsed, rejectReason, noHitHistoryClass, minAbsDepthDelta, crossingPathClass, silhouetteEdgeUsed);
+@@ -1189,6 +1282,13 @@
+     if (SSRDisplayMode == 27)
+         return float4(CrossingPathColor(crossingPathClass, traceAccepted, rejectReason), 1.0);
+ 
++    if (SSRDisplayMode == 28)
++    {
++        if (!traceAccepted)
++            return 0.0;
++        return float4(silhouetteEdgeUsed.xxx, confidence);
++    }
++
+@@ -1233,7 +1333,7 @@
+-    if (SSRDisplayMode == 25 || SSRDisplayMode == 26 || SSRDisplayMode == 27)
++    if (SSRDisplayMode == 25 || SSRDisplayMode == 26 || SSRDisplayMode == 27 || SSRDisplayMode == 28)
+         return float4(saturate(rawSSR.rgb), 1.0);
+@@ -1408,10 +1508,10 @@
+-technique SL_SSR_v0_23_DeepRefine
++technique SL_SSR_v0_24_SilhouetteEdge
+ <
+-    ui_label = "SL SSR v0.23 - Deep Refine";
+-    ui_tooltip = "v0.23 keeps the proven crossing-path diagnostics and increases binary hit refinement from 5 to 9 iterations. This tests whether the avatar-shaped ORANGE holes are legitimate crossings that were simply under-refined before the thickness test.";
++    ui_label = "SL SSR v0.24 - Silhouette Edge";
++    ui_tooltip = "v0.24 preserves the working disocclusion skips and conservatively recovers only the final oversized crossing when refinement resolves to a tight foreground silhouette depth edge.";
+ >
+ {
