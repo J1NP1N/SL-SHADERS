@@ -1,0 +1,48 @@
+--- v0.18/SL_SSR_v0_1_LegacyFirst.fx
++++ v0.19/SL_SSR_v0_1_LegacyFirst.fx
+@@ -1,4 +1,4 @@
+-// SL_SSR_v0_18_RayRejectReasons.fx
++// SL_SSR_v0_19_TraceBudget.fx
+ // Firestorm-native-data screen-space reflections for ReShade.
+ //
+ // v0.18 lineage / current goals:
+@@ -18,6 +18,7 @@
+ //   - exact SL_ALPHA_MASK receiver protection
+ //   - native PBR alpha-blend path probe published as SL_PBR_ALPHA_MASK
+ //   - half-resolution ray tracing for practical cost
++//   - trace budget large enough to reach configured max distance at default growth
+ //   - limited skip-through for oversized foreground disocclusion crossings
+ //   - diagnostic classification of every geometry-trace rejection path
+ //
+@@ -34,7 +35,7 @@
+ 
+ #include "ReShade.fxh"
+ 
+-#define SL_SSR_MAX_STEPS 32
++#define SL_SSR_MAX_STEPS 48
+ #define SL_SSR_BINARY_STEPS 5
+ 
+ // -----------------------------------------------------------------------------
+@@ -95,7 +96,7 @@
+     ui_tooltip = "Maximum forward ray-march steps. The pass runs at half resolution.";
+     ui_type = "slider";
+     ui_min = 6; ui_max = SL_SSR_MAX_STEPS;
+-> = 16;
++> = 40;
+ 
+ uniform float SSRInitialStep
+ <
+@@ -1238,10 +1239,10 @@
+     return color;
+ }
+ 
+-technique SL_SSR_v0_18_RayRejectReasons
++technique SL_SSR_v0_19_TraceBudget
+ <
+-    ui_label = "SL SSR v0.18 - Ray Reject Reasons";
+-    ui_tooltip = "Diagnostic-only v0.18 keeps v0.17 behavior and color-codes the exact geometry-trace termination path for missing SSR pixels. Use Ray termination reason on the persistent avatar-adjacent gap.";
++    ui_label = "SL SSR v0.19 - Trace Budget";
++    ui_tooltip = "v0.19 fixes the ray-march budget so the configured Maximum Ray Distance can actually be reached. The previous hard 32-step cap stopped a default 0.12/1.18 ray around 20.3 units even when Maximum Ray Distance was 32.";
+ >
+ {
+     pass Trace
