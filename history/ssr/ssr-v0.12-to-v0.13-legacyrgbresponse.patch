@@ -1,0 +1,135 @@
+--- v0.12/SL_SSR_v0_1_LegacyFirst.fx
++++ v0.13/SL_SSR_v0_1_LegacyFirst.fx
+@@ -1,14 +1,15 @@
+-// SL_SSR_v0_12_ReShadePublish.fx
++// SL_SSR_v0_13_LegacyRGBResponse.fx
+ // Firestorm-native-data screen-space reflections for ReShade.
+ //
+-// v0.8 goals:
++// v0.13 lineage / current goals:
+ //   - legacy SL materials first
+ //   - exact Firestorm SL_DEPTH + SL_NORMALS
+ //   - exact Firestorm projection/inverse projection from SLProbeLighting
+ //   - world-only SL_SCENE_LINEAR as the reflection source
+ //   - exact Firestorm specularRect through SL_GBUFFER_SPECULAR (draw-time snapshot)
+-//   - legacy selector from native specular RGB + glossiness, with env intensity as a classic-shiny boost
+-//   - legacy reflectivity only from actual legacy specular RGB or classic shiny/env intensity
++//   - legacy selector from native specular RGB, with env intensity as a classic-shiny fallback
++//   - legacy reflection color is tinted directly by Firestorm specularRect.rgb
++//   - legacy specularRect.a remains diagnostic glossiness only; it does not gate SSR energy
+ //   - split diagnostics so legacy glossiness is never confused with PBR roughness
+ //   - PBR remains secondary architecturally, but no longer attenuated to invisibility
+ //   - raw hit-color and final-weight diagnostics added
+@@ -22,7 +23,7 @@
+ //   PBR:    specularRect.rgb = occlusion, roughness, metallic
+ //           normalMap.a carries GBUFFER_FLAG_HAS_PBR (~0.67)
+ //
+-// Known v0.8 limitation:
++// Known current limitation:
+ //   ReShade still normally composites after Firestorm UI until SLSceneLayer is
+ //   fixed. The ray SOURCE is world-only, but the final additive composite can
+ //   still land over UI pixels that cover a reflective world surface.
+@@ -146,8 +147,8 @@
+ 
+ uniform float LegacyGlossinessStart
+ <
+-    ui_label = "Legacy Glossiness Start";
+-    ui_tooltip = "Legacy specularRect alpha is glossiness. Lower values allow broader/duller legacy specular materials to trace.";
++    ui_label = "Legacy Glossiness Start (unused v0.13)";
++    ui_tooltip = "Diagnostic compatibility control retained from older builds. v0.13 does not gate legacy SSR with specularRect alpha; Firestorm native SSR colors reflections from specularRect RGB directly.";
+     ui_type = "drag";
+     ui_min = 0.0; ui_max = 1.0; ui_step = 0.01;
+ > = 0.05;
+@@ -494,21 +495,24 @@
+     return abs(rawNormal.a - 0.67) < 0.1;
+ }
+ 
+-float LegacyReflectivity(float4 rawNormal, float4 specInfo)
++float3 LegacySpecularTint(float4 rawNormal, float4 specInfo)
+ {
+-    // Firestorm legacy materialF.glsl: specularRect RGB = exact specular color,
+-    // A = glossiness. Older/simple legacy paths also encode classic shiny/env
+-    // intensity in normalMap.b.
+-    //
+-    // Important: glossiness is a lobe/exponent control, not reflectivity by itself.
+-    // A legacy surface with black specular RGB and zero classic env/shiny should
+-    // not become reflective merely because specularRect.a happens to be nonzero.
+-    float specLevel = max(specInfo.r, max(specInfo.g, specInfo.b));
+-    float gloss = saturate(specInfo.a);
+-    float glossWeight = smoothstep(LegacyGlossinessStart, 1.0, gloss);
+-    float materialSpec = specLevel * glossWeight * LegacySpecularScale;
++    // Firestorm native SSR multiplies the reflected scene color directly by
++    // legacy specularRect.rgb. specularRect.a is legacy glossiness metadata,
++    // but the native SSR post shader does not use alpha as a reflectivity gate.
++    float3 materialSpec = saturate(specInfo.rgb * LegacySpecularScale);
++
++    // Preserve the older/simple classic-shiny path as a neutral fallback.
+     float classicEnv = saturate(rawNormal.b) * LegacyEnvScale;
+-    return saturate(max(materialSpec, classicEnv));
++    return max(materialSpec, classicEnv.xxx);
++}
++
++float LegacyReflectivity(float4 rawNormal, float4 specInfo)
++{
++    // Scalar only for trace eligibility and diagnostics. Final legacy reflection
++    // color is multiplied by the full RGB tint in the composite stage.
++    float3 tint = LegacySpecularTint(rawNormal, specInfo);
++    return max(tint.r, max(tint.g, tint.b));
+ }
+ 
+ float PBRReflectivity(float4 specInfo)
+@@ -890,7 +894,8 @@
+     float4 rawNormal = GetRawNormalData(uv);
+     bool pbr = IsPBR(rawNormal);
+     float4 specInfo = GetGBufferSpecular(uv);
+-    float reflectivity = pbr ? PBRReflectivity(specInfo) : LegacyReflectivity(rawNormal, specInfo);
++    float3 legacyTint = pbr ? 1.0.xxx : LegacySpecularTint(rawNormal, specInfo);
++    float reflectivity = pbr ? PBRReflectivity(specInfo) : max(legacyTint.r, max(legacyTint.g, legacyTint.b));
+ 
+     float4 rawSSR = tex2D(SLSSRRawSampler, uv);
+     float alphaCoverage = GetAlphaCoverage(uv);
+@@ -986,18 +991,27 @@
+     float3 viewPos = ReconstructViewPosition(uv, depth);
+     float fresnel = ViewFresnel(viewPos, normal);
+ 
++    // PBR keeps the existing scalar roughness/metallic response. Legacy now
++    // follows Firestorm's native material use more closely: alpha/glossiness
++    // does not gate energy, and the reflected scene color is tinted by the
++    // actual legacy specular RGB.
++    float materialWeight = pbr ? saturate(reflectivity) : 1.0;
+     float weight =
+         saturate(rawSSR.a) *
+-        saturate(reflectivity) *
++        materialWeight *
+         fresnel *
+         max(SSRStrength, 0.0) *
+         receiver;
+ 
+-    float3 reflectionLinear = max(rawSSR.rgb, 0.0) * weight;
++    float3 materialTint = pbr ? 1.0.xxx : legacyTint;
++    float3 reflectionLinear = max(rawSSR.rgb, 0.0) * weight * materialTint;
+ 
+     if (SSRDisplayMode == 12)
+     {
+-        float w = saturate(weight * 10.0);
++        // Show the strongest actually-applied material channel, not just the
++        // geometry/fresnel weight. This remains useful for colored legacy specular.
++        float applied = pbr ? weight : weight * reflectivity;
++        float w = saturate(applied * 10.0);
+         return float4(w.xxx, 1.0);
+     }
+ 
+@@ -1014,10 +1028,10 @@
+     return color;
+ }
+ 
+-technique SL_SSR_v0_12_ReShadePublish
++technique SL_SSR_v0_13_LegacyRGBResponse
+ <
+-    ui_label = "SL SSR v0.12 - ReShade Publish";
+-    ui_tooltip = "Publishes the proven main-pass specular payload through a ReShade-owned texture so the FX samples the same nonzero bytes the add-on already proved.";
++    ui_label = "SL SSR v0.13 - Legacy RGB Response";
++    ui_tooltip = "Uses the proven ReShade-published G-buffer. Legacy SSR now follows Firestorm specularRect RGB directly and no longer treats alpha/glossiness as a reflectivity gate.";
+ >
+ {
+     pass Trace
