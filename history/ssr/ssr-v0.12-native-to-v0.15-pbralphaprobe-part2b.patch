@@ -1,0 +1,219 @@
+--- a/SLProbeLighting.cpp
++++ b/SLProbeLighting.cpp
+@@ -6140,6 +6639,31 @@
+                     &state->specular_snapshot_read_fbo);
+                 state->specular_snapshot_read_fbo = 0;
+             }
++
++            if (state->pbr_alpha_before_texture != 0)
++            {
++                glDeleteTextures(
++                    1,
++                    &state->pbr_alpha_before_texture);
++                state->pbr_alpha_before_texture = 0;
++            }
++
++            if (state->pbr_alpha_after_texture != 0)
++            {
++                glDeleteTextures(
++                    1,
++                    &state->pbr_alpha_after_texture);
++                state->pbr_alpha_after_texture = 0;
++            }
++
++            if (state->pbr_alpha_read_fbo != 0 &&
++                p_glDeleteFramebuffers != nullptr)
++            {
++                p_glDeleteFramebuffers(
++                    1,
++                    &state->pbr_alpha_read_fbo);
++                state->pbr_alpha_read_fbo = 0;
++            }
+         }
+ 
+         device->destroy_private_data<
+@@ -6249,6 +6773,21 @@
+         state->last_native_ssr_scene =
+             state->frame_native_ssr_scene;
+ 
++        state->last_pbr_alpha_draws =
++            state->frame_pbr_alpha_draws;
++        state->last_pbr_alpha_program =
++            state->frame_pbr_alpha_program;
++        state->last_pbr_alpha_base =
++            state->frame_pbr_alpha_base;
++        state->last_pbr_alpha_orm =
++            state->frame_pbr_alpha_orm;
++        state->last_pbr_alpha_normal =
++            state->frame_pbr_alpha_normal;
++        state->last_pbr_alpha_metallic =
++            state->frame_pbr_alpha_metallic;
++        state->last_pbr_alpha_roughness =
++            state->frame_pbr_alpha_roughness;
++
+         state->current = {};
+         // Do NOT clear specular_snapshot_ready here. On OpenGL, the ReShade
+         // begin-effects callback may run after the present add-on callback. If
+@@ -6270,6 +6809,13 @@
+         state->frame_native_ssr_specular = 0;
+         state->frame_native_ssr_diffuse = 0;
+         state->frame_native_ssr_scene = 0;
++        state->frame_pbr_alpha_draws = 0;
++        state->frame_pbr_alpha_program = 0;
++        state->frame_pbr_alpha_base = 0;
++        state->frame_pbr_alpha_orm = 0;
++        state->frame_pbr_alpha_normal = 0;
++        state->frame_pbr_alpha_metallic = 0.0f;
++        state->frame_pbr_alpha_roughness = 0.0f;
+     }
+ 
+     void on_begin_effects(
+@@ -6309,6 +6855,7 @@
+         tonemap_capture tonemap = {};
+         texture_capture direct_specular = {};
+         texture_capture snapshot_specular = {};
++        pbr_alpha_snapshot_capture pbr_alpha_snapshot = {};
+         int specular_source_mode = 0;
+ 
+         {
+@@ -6364,6 +6911,57 @@
+                 capture.scene_linear = {};
+             }
+ 
++            // Close a final PBR-alpha segment if the last application draw was
++            // itself PBR alpha and no subsequent draw callback existed.
++            if (device_data->pbr_alpha_segment_active)
++                finish_pbr_alpha_segment(
++                    *device_data);
++
++            if (device_data->pbr_alpha_pair_ready &&
++                device_data->pbr_alpha_before_texture != 0 &&
++                device_data->pbr_alpha_after_texture != 0)
++            {
++                pbr_alpha_snapshot.before.uniform_present = true;
++                pbr_alpha_snapshot.before.texture_bound = true;
++                pbr_alpha_snapshot.before.texture =
++                    device_data->pbr_alpha_before_texture;
++                pbr_alpha_snapshot.before.resource =
++                    make_gl_resource(
++                        GL_TEXTURE_2D_VALUE,
++                        pbr_alpha_snapshot.before.texture);
++                pbr_alpha_snapshot.before.desc =
++                    device->get_resource_desc(
++                        pbr_alpha_snapshot.before.resource);
++                pbr_alpha_snapshot.before.desc_valid =
++                    pbr_alpha_snapshot.before.desc.type ==
++                        api::resource_type::texture_2d;
++
++                pbr_alpha_snapshot.after.uniform_present = true;
++                pbr_alpha_snapshot.after.texture_bound = true;
++                pbr_alpha_snapshot.after.texture =
++                    device_data->pbr_alpha_after_texture;
++                pbr_alpha_snapshot.after.resource =
++                    make_gl_resource(
++                        GL_TEXTURE_2D_VALUE,
++                        pbr_alpha_snapshot.after.texture);
++                pbr_alpha_snapshot.after.desc =
++                    device->get_resource_desc(
++                        pbr_alpha_snapshot.after.resource);
++                pbr_alpha_snapshot.after.desc_valid =
++                    pbr_alpha_snapshot.after.desc.type ==
++                        api::resource_type::texture_2d;
++
++                pbr_alpha_snapshot.valid =
++                    pbr_alpha_snapshot.before.desc_valid &&
++                    pbr_alpha_snapshot.after.desc_valid &&
++                    pbr_alpha_snapshot.before.desc.texture.width > 1 &&
++                    pbr_alpha_snapshot.before.desc.texture.height > 1 &&
++                    pbr_alpha_snapshot.before.desc.texture.width ==
++                        pbr_alpha_snapshot.after.desc.texture.width &&
++                    pbr_alpha_snapshot.before.desc.texture.height ==
++                        pbr_alpha_snapshot.after.desc.texture.height;
++            }
++
+             if (device_data->specular_snapshot_ready &&
+                 device_data->specular_snapshot_texture != 0)
+             {
+@@ -6459,7 +7057,8 @@
+             render_native_irradiance(
+                 runtime,
+                 runtime_data->output,
+-                capture);
++                capture,
++                pbr_alpha_snapshot);
+ 
+         if (!rendered)
+         {
+@@ -6493,6 +7092,17 @@
+             &specular_source,
+             1);
+ 
++        const float pbr_alpha_mask_valid =
++            runtime_data->output.pbr_alpha_mask_semantic_bound
++                ? 1.0f
++                : 0.0f;
++
++        set_all_float_uniforms_named(
++            runtime,
++            "SLPBRAlphaMaskValid",
++            &pbr_alpha_mask_valid,
++            1);
++
+         // The current frame snapshot has now been published to ReShade. Clear
+         // only the readiness latch (never the texture itself) so the next
+         // authoritative Firestorm deferred draw can refresh the same private
+@@ -6504,6 +7114,13 @@
+             device_data->specular_snapshot_ready = false;
+         }
+ 
++        if (pbr_alpha_snapshot.valid)
++        {
++            std::lock_guard<std::mutex> lock(
++                device_data->mutex);
++            device_data->pbr_alpha_pair_ready = false;
++        }
++
+         const float valid =
+             rendered ? 1.0f : 0.0f;
+ 
+@@ -6777,7 +7394,7 @@
+             runtime_data->lifecycle;
+ 
+         ImGui::TextUnformatted(
+-            "SL Probe Lighting v1.6.10 - DEPTH / temporal / ReShade-published G-buffer bridge (v0.12 ReShadePublish)");
++            "SL Probe Lighting v1.6.11 - DEPTH / temporal / PBR alpha path probe (v0.15 PBRAlphaProbe)");
+         ImGui::Separator();
+ 
+         const depth_compat_output &depth_compat =
+@@ -7203,6 +7820,31 @@
+             output.height);
+ 
+         ImGui::Text(
++            "PBR alpha draws last frame: %llu, program %u",
++            static_cast<unsigned long long>(
++                device_data->last_pbr_alpha_draws),
++            device_data->last_pbr_alpha_program);
++
++        ImGui::Text(
++            "PBR alpha samplers: base %u, ORM %u, normal %u",
++            device_data->last_pbr_alpha_base,
++            device_data->last_pbr_alpha_orm,
++            device_data->last_pbr_alpha_normal);
++
++        ImGui::Text(
++            "PBR alpha factors: metallic %.3f, roughness %.3f",
++            device_data->last_pbr_alpha_metallic,
++            device_data->last_pbr_alpha_roughness);
++
++        ImGui::Text(
++            "PBR alpha snapshots: %llu, mask semantic bound: %s",
++            static_cast<unsigned long long>(
++                device_data->pbr_alpha_snapshot_count),
++            output.pbr_alpha_mask_semantic_bound
++                ? "YES"
++                : "no");
++
++        ImGui::Text(
+             "Native renders total: %llu",
+             static_cast<unsigned long long>(
+                 output.render_count));
