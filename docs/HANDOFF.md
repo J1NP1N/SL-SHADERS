@@ -6,11 +6,13 @@ This is the live project checkpoint.
 
 ## Current focus
 
-Opaque SSR plumbing/material response are proven. v0.16 fixed the dark additive-composite shadow bleed, but a camera-angle-dependent avatar-shaped **SSR disocclusion hole** remains. The active build is an FX-only test that skips a limited number of oversized foreground depth crossings instead of immediately terminating the reflected ray.
+Opaque SSR plumbing/material response are proven. v0.16 fixed the dark additive-composite shadow bleed. v0.17 proved the remaining avatar-shaped, camera-dependent reflection hole is a true screen-space disocclusion / missing-history problem rather than a thickness/composite problem.
 
 Installed native bridge may remain **SLProbeLighting v1.6.11 / v0.15 PBRAlphaProbe**.
 
-Current FX test: **SSR v0.17 DisocclusionSkip — PENDING RUNTIME**.
+Current proven FX baseline: **SSR v0.16 EnergyComposite** plus the earlier material-response fixes.
+
+v0.17 DisocclusionSkip is **FAIL / informative** and should not be the long-term fix.
 
 ## Runtime status
 
@@ -20,9 +22,9 @@ Current FX test: **SSR v0.17 DisocclusionSkip — PENDING RUNTIME**.
 - material class / bridge: legacy-cyan classification and healthy bridge confirmed.
 - v0.13 LegacyRGBResponse: PASS — legacy `specularRect.rgb` drives SSR even when alpha/glossiness is zero.
 - v0.14 LegacyDielectricFallback: CONCEPT PASS — diffuse-only legacy surfaces can receive conservative SSR without authored spec maps; strength remains tunable.
-- v0.15 PBRAlphaProbe: INCONCLUSIVE / selector miss — supplied `PBR alpha-blend path probe mask` was fully black. Known glass fixture did not light up. Lower draw counters were not visible, so do not infer draws=0. Glass work is parked, not abandoned.
-- v0.16 EnergyComposite: PARTIAL PASS — dark cast-shadow ghost was removed/reduced, proving receiver base replacement works. Remaining artifact is a camera-dependent missing-SSR region behind/around the avatar, consistent with screen-space disocclusion.
-- v0.17 DisocclusionSkip: PENDING — keep v0.16 composite/material behavior and allow limited oversized-crossing skips with reduced confidence.
+- v0.15 PBRAlphaProbe: INCONCLUSIVE / selector miss — supplied PBR alpha-blend path probe mask was fully black. Known glass fixture did not light up. Glass work is parked, not abandoned.
+- v0.16 EnergyComposite: PARTIAL PASS — dark cast-shadow ghost was removed/reduced by receiver base replacement.
+- v0.17 DisocclusionSkip: FAIL / informative — the avatar-shaped hole remains visible in `Ray hit mask` and `Reflection base removal x10`; limited depth-crossing skips do not recover it.
 
 ## Proven facts
 
@@ -32,63 +34,24 @@ Current FX test: **SSR v0.17 DisocclusionSkip — PENDING RUNTIME**.
 - Legacy/PBR classification via normal-buffer flag works.
 - Legacy explicit specular RGB response is correct enough to produce visible SSR.
 - Diffuse-only legacy surfaces can receive a small dielectric fallback.
-- v0.16 demonstrated that the old dark artifact was partly an additive-composite problem, but the remaining camera-dependent hole is not a shadow-color problem.
+- v0.16 demonstrated that the old dark artifact was partly an additive-composite problem.
+- The remaining camera-dependent avatar-shaped reflection hole is already present in the ray-hit mask, therefore it originates before material weighting or composite.
+- v0.17's skip-ahead marcher does not recover the missing region.
 
-## v0.17 design
+## Disocclusion conclusion
 
-Current v0.16 ray marcher behavior:
+The remaining hole is consistent with a single-layer SSR visibility limit: the current screen depth/color buffers do not contain the reflected background hidden behind the foreground avatar at that camera angle.
 
-- binary-refines a depth crossing;
-- accepts the hit if final depth delta is within `SSRThickness`;
-- otherwise treats a large crossing as disocclusion and returns false immediately.
+Do **not** keep tuning `SSRThickness`, skip count, or skip confidence as the primary fix.
 
-This is a plausible cause of the avatar-dependent hole: a foreground occluder can terminate the reflected ray before the march reaches recoverable screen-space background.
+The next approach should provide information outside the current single-frame ray result, preferably:
 
-v0.17 changes only that failure path:
+1. temporally reprojected valid SSR history with confidence/depth/normal rejection;
+2. then a conservative spatial/probe fallback only where current SSR and valid history are both unavailable.
 
-- normal accepted hits remain unchanged;
-- oversized crossings may be skipped up to `Disocclusion Skips` times (default 2);
-- the ray resumes farther along its direction instead of immediately returning false;
-- a later hit after one or more skips has its confidence multiplied by `Skipped-Hit Confidence` per skip (default 0.55);
-- material weighting, PBR/legacy handling, v0.14 fallback, and v0.16 energy composite are unchanged.
+Keep the v0.16 energy-composite behavior because it fixed the dark receiver/shadow bleed component.
 
-New diagnostic:
-
-`Display Mode -> Disocclusion-skip hit mask`
-
-White means the final accepted hit required at least one oversized-crossing skip.
-
-## v0.17 test
-
-FX-only. Firestorm may remain open.
-
-Verify technique:
-
-`SL SSR v0.17 - Disocclusion Skip`
-
-Defaults:
-
-- `Reflection Base Replacement = 1.00`
-- `Disocclusion Skips = 2`
-- `Skipped-Hit Confidence = 0.55`
-
-Use the same glossy floor/avatar angle that shows the missing SSR shape.
-
-Return:
-
-1. `Final composite`
-2. `Disocclusion-skip hit mask`
-
-Interpretation:
-
-- hole reduced + white skip mask in the recovered region: keep and tune confidence conservatively;
-- white skip mask but obvious reflections bleed through solid objects: reduce confidence/skips;
-- hole remains and mask is black there: single-layer march continuation cannot recover the missing data; next step is temporal/spatial/probe fallback rather than more composite tuning.
-
-Source delta commit: `17abe9b17ca54ff8d01e4d5c50c28f531664e578`.
-
-Local package: `SL_SSR_v0_17_DisocclusionSkip.zip`
-SHA-256: `34e757d3aa38ad0bff232e450340df52f8efc5f1267124783c813dbf9754231c`
+v0.17 runtime record commit: `38af17638ae5522654d0c2ca97070567fe8f780e`.
 
 ## Glass checkpoint
 
@@ -101,7 +64,7 @@ Known glass fixture:
 - ORM UUID `ae33719a-14d1-d228-2ad1-70adddebe890`
 - Normal UUID `4ed76883-9057-3be5-c18e-1b878bf9dd88`
 
-v0.15 first-segment PBR-alpha probe mask was black in the supplied runtime image. Resume glass work after the disocclusion issue is settled; likely next glass revision should accumulate/select multiple PBR-alpha segments or expose the draw counters more directly.
+v0.15 first-segment PBR-alpha probe mask was black in the supplied runtime image. Resume glass work after the disocclusion issue is settled; likely next glass revision should accumulate/select multiple PBR-alpha segments or expose draw counters more directly.
 
 ## Important commits
 
@@ -114,6 +77,7 @@ v0.15 first-segment PBR-alpha probe mask was black in the supplied runtime image
 - v0.16 source: `4658fb3d6baeeedd7e56cb76c5a3d031b4372c24`
 - v0.16 runtime record: `399e0075e49b4e628056f06bc7ae70c31f41e003`
 - v0.17 source delta: `17abe9b17ca54ff8d01e4d5c50c28f531664e578`
+- v0.17 runtime record: `38af17638ae5522654d0c2ca97070567fe8f780e`
 
 Original recovered v0.10 source commit: `dd7022c80e0acf89295b11bda00ee788ae10d166`.
 
