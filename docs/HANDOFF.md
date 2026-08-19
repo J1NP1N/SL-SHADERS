@@ -6,11 +6,13 @@ This is the live project checkpoint.
 
 ## Current focus
 
-Opaque SSR plumbing/material response are proven. v0.16 fixed the dark additive-composite shadow bleed. The persistent camera-dependent avatar-adjacent black strip is now diagnosed as a **ray-search budget exhaustion** problem, not hit thickness/material/composite.
+Opaque SSR plumbing/material response are proven. v0.16 fixed the dark additive-composite shadow bleed. The persistent camera-dependent avatar-adjacent black strip is still present in the geometry/ray-hit path.
+
+The current leading hypothesis is now **ray-march sampling/tunneling**, not total trace range, hit thickness, material weighting, or final composite.
 
 Installed native bridge may remain **SLProbeLighting v1.6.11 / v0.15 PBRAlphaProbe**.
 
-Current FX test: **SSR v0.19 TraceBudget — PENDING RUNTIME**.
+Current FX baseline under investigation: **SSR v0.19 TraceBudget**.
 
 ## Runtime status
 
@@ -22,9 +24,9 @@ Current FX test: **SSR v0.19 TraceBudget — PENDING RUNTIME**.
 - v0.14 LegacyDielectricFallback: CONCEPT PASS — diffuse-only legacy surfaces can receive conservative SSR without authored spec maps; strength remains tunable.
 - v0.15 PBRAlphaProbe: INCONCLUSIVE / selector miss — supplied PBR alpha-blend path probe mask was fully black. Known glass fixture did not light up. Glass work is parked, not abandoned.
 - v0.16 EnergyComposite: PARTIAL PASS — dark cast-shadow ghost was removed/reduced by receiver base replacement.
-- v0.17 DisocclusionSkip: FAIL / informative — skip-ahead did not recover the black region. Follow-up clarification established white in the ray diagnostic is the good/accepted reflection and black is the defect. Raising `Hit Thickness` to `0.30` did not fill it.
-- v0.18 RayRejectReasons: PASS as diagnostic — the bad strip is BLUE, meaning the ray ended without an accepted depth crossing before its step/distance search budget ended.
-- v0.19 TraceBudget: PENDING — increases the hard march ceiling so the configured 32-unit max ray distance can actually be searched with the current step schedule.
+- v0.17 DisocclusionSkip: FAIL / informative — skip-ahead did not recover the black region. White in the ray diagnostic is good/accepted reflection; black is the defect. Raising `Hit Thickness` to `0.30` did not fill it.
+- v0.18 RayRejectReasons: PASS as diagnostic — target strip is BLUE, meaning no depth crossing was accepted before the march terminated.
+- v0.19 TraceBudget: FAIL for target artifact, informative — target strip remains BLUE even with a much larger runtime search budget.
 
 ## Proven facts
 
@@ -36,68 +38,65 @@ Current FX test: **SSR v0.19 TraceBudget — PENDING RUNTIME**.
 - Diffuse-only legacy surfaces can receive a small dielectric fallback.
 - v0.16 demonstrated that the old dark artifact was partly an additive-composite problem.
 - The remaining black region appears before material weighting/composite because it is present in the ray-hit path.
-- Global `Hit Thickness` is not the controlling fix for this region.
-- v0.18 proves the defect terminates as BLUE: search-budget exhaustion.
+- Global `Hit Thickness` is not the controlling fix.
+- v0.18 classifies the bad strip as BLUE/no accepted crossing.
+- v0.19 proves the old 32-step hard ceiling was a real bug, but **not the full cause of this strip**.
 
-## v0.18 diagnosis
+## v0.19 runtime result
 
-The shader had:
+Runtime screenshot showed:
 
-- `SL_SSR_MAX_STEPS = 32`
-- active `Initial Ray Step = 0.12`
-- active `Ray Step Growth = 1.18`
-- `Maximum Ray Distance = 32`
+- Trace Steps = 48
+- Initial Ray Step = 0.12
+- Ray Step Growth = 1.18
+- Maximum Ray Distance = 128
+- Hit Thickness = 0.18
+- Disocclusion Skips = 4
+- Skipped-Hit Confidence = 1.00
 
-With exponential stepping, iteration 32 reaches only about **20.3 view-space units**. Roughly **35 iterations** are required to search the configured 32-unit ray distance.
+The bad strip still remained BLUE.
 
-Therefore the previous shader could legally return BLUE because the hard 32-iteration loop ended before the ray had searched the configured maximum distance.
+With 48 steps at 0.12 / 1.18, the march can reach beyond the visible 128-unit maximum-distance setting. Therefore the target strip is no longer explained by insufficient total ray range or the old hard 32-step ceiling.
 
-Runtime record commit: `179a926ac5d6b788d680ce146b899f762d494576`.
+Runtime result commit: `e64462d2d304cafe39e552eb06c5983c86da9c29`.
 
-## v0.19 TraceBudget
+## Current hypothesis: sampling / tunneling
 
-FX-only.
+The marcher samples exponentially spaced distances and only detects a hit when sampled depth changes from negative to non-negative:
 
-Changes:
+`previousDelta < 0 && delta >= 0`
 
-- compile-time max trace iterations: `32 -> 48`
-- default `Trace Steps`: `40`
-- `Maximum Ray Distance` remains `32`
-- initial step/growth remain `0.12 / 1.18`
-- material response, v0.14 fallback, v0.16 energy composite, disocclusion logic, and v0.18 rejection diagnostics are unchanged.
+A thin or steep reflected surface can therefore be crossed between two samples and never produce the required sign transition. In that case:
 
-At the default 32-unit max distance, the exponential step reaches the distance cap after roughly 35 iterations, so the extra hard ceiling does not imply 48 iterations every pixel. It simply removes the premature 32-step cutoff.
+- `Hit Thickness` does nothing because binary refinement never starts;
+- extending maximum distance does nothing because the ray already passed the missed geometry;
+- adding more late samples does little if the local spacing near the target remains too coarse.
 
-Source delta commit: `faeee069379d21e8bd824c0e3087b77be170898d`.
+This matches the persistent BLUE result around thin avatar/limb reflection geometry.
 
-Local package:
+## Next runtime step
 
-- `SL_SSR_v0_19_TraceBudget.zip`
-- SHA-256 `72e75b126d49df4ebc3181828382094b001b7c12b6afd0c2506a1994a38d753c`
+Before another structural marcher rewrite, use v0.19 and test local sample density on the same bad camera angle.
 
-## Next runtime test
+Keep:
 
-Hot-install v0.19; Firestorm may remain open.
+- Trace Steps = 48
+- Initial Ray Step = 0.12
+- Hit Thickness = 0.18
+- Disocclusion Skips = 0 for a clean test
+- Ray termination reason display
 
-Because ReShade presets can retain the old uniform value, manually set:
+Test `Ray Step Growth` in this order:
 
-- `Trace Steps = 40`
-- `Initial Ray Step = 0.12`
-- `Ray Step Growth = 1.18`
-- `Maximum Ray Distance = 32`
+1. `1.12`
+2. `1.08`
 
-Use the same camera angle where v0.18 showed the BLUE strip.
-
-Return:
-
-1. `Ray termination reason`
-2. `Ray hit mask`
-3. normal composite
+Set Maximum Ray Distance only high enough for the avatar reflection target; do not use 128 unless needed. The purpose is local density, not range.
 
 Interpretation:
 
-- previous BLUE strip becomes WHITE / valid hit: PASS; the hard trace-step ceiling was the missing-reflection cause.
-- BLUE strip remains: further split BLUE into explicit `Trace Steps exhausted` versus `Maximum Ray Distance reached`, and inspect whether prior disocclusion skips consume the added search range.
+- BLUE strip shrinks/turns WHITE as growth is reduced: sampling/tunneling confirmed. Next build should replace the current coarse exponential march with a denser/adaptive screen-space/depth-aware march while preserving practical cost.
+- BLUE strip unchanged: next build should add a closest-approach diagnostic (minimum absolute depth delta along BLUE rays) before changing the marcher.
 
 ## Glass checkpoint
 
@@ -127,6 +126,7 @@ v0.15 first-segment PBR-alpha probe mask was black in the supplied runtime image
 - v0.18 source delta: `af126b4908715a242caf7c28e2a1bbc99b7dc2e4`
 - v0.18 runtime record: `179a926ac5d6b788d680ce146b899f762d494576`
 - v0.19 source delta: `faeee069379d21e8bd824c0e3087b77be170898d`
+- v0.19 runtime record: `e64462d2d304cafe39e552eb06c5983c86da9c29`
 
 Original recovered v0.10 source commit: `dd7022c80e0acf89295b11bda00ee788ae10d166`.
 
