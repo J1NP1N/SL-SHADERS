@@ -1,0 +1,168 @@
+--- v0.17/SL_SSR_v0_1_LegacyFirst.fx
++++ v0.18/SL_SSR_v0_1_LegacyFirst.fx
+@@ -1,7 +1,7 @@
+-// SL_SSR_v0_17_DisocclusionSkip.fx
++// SL_SSR_v0_18_RayRejectReasons.fx
+ // Firestorm-native-data screen-space reflections for ReShade.
+ //
+-// v0.17 lineage / current goals:
++// v0.18 lineage / current goals:
+ //   - legacy SL materials first
+ //   - exact Firestorm SL_DEPTH + SL_NORMALS
+ //   - exact Firestorm projection/inverse projection from SLProbeLighting
+@@ -19,6 +19,7 @@
+ //   - native PBR alpha-blend path probe published as SL_PBR_ALPHA_MASK
+ //   - half-resolution ray tracing for practical cost
+ //   - limited skip-through for oversized foreground disocclusion crossings
++//   - diagnostic classification of every geometry-trace rejection path
+ //
+ // Firestorm source contracts used here:
+ //   legacy: specularRect.rgb = specular color, specularRect.a = glossiness
+@@ -256,7 +257,8 @@
+         "Legacy no-spec fallback mask\0"
+         "PBR alpha-blend path probe mask\0"
+         "Reflection base removal x10\0"
+-        "Disocclusion-skip hit mask\0";
++        "Disocclusion-skip hit mask\0"
++        "Ray termination reason\0";
+ > = 0;
+ 
+ uniform float SSRDebugGain
+@@ -667,17 +669,28 @@
+     out float2 hitUV,
+     out float hitDistance,
+     out float confidence,
+-    out float disocclusionUsed)
++    out float disocclusionUsed,
++    out float rejectReason)
+ {
+     hitUV = 0.0;
+     hitDistance = 0.0;
+     confidence = 0.0;
+     disocclusionUsed = 0.0;
++    // v0.18 diagnostic codes on a failed trace:
++    // 1 = reflected ray points toward/through camera
++    // 2 = projected ray left the valid screen/view
++    // 3 = no depth crossing before step/distance budget ended
++    // 4 = depth crossing was still oversized after skip budget
++    // 5 = geometric hit found but edge/distance confidence reached zero
++    rejectReason = 3.0;
+ 
+     // Rays heading back toward/through the camera cannot produce a stable
+     // visible-screen intersection.
+     if (rayDir.z >= -0.001)
++    {
++        rejectReason = 1.0;
+         return false;
++    }
+ 
+     float3 startPos = originPos + originNormal * max(SSRThickness * 0.75, 0.01);
+ 
+@@ -699,7 +712,10 @@
+         float delta;
+ 
+         if (!EvaluateRayDepth(rayPos, uv, delta))
++        {
++            rejectReason = 2.0;
+             break;
++        }
+ 
+         // Background keeps the march alive; no depth surface to cross yet.
+         if (delta < -9e5)
+@@ -759,7 +775,14 @@
+                     disocclusionUsed = 1.0;
+                     confidence *= pow(saturate(SSRDisocclusionConfidence), (float)disocclusionSkipsUsed);
+                 }
+-                return confidence > 0.0;
++                if (confidence > 0.0)
++                {
++                    rejectReason = 0.0;
++                    return true;
++                }
++
++                rejectReason = 5.0;
++                return false;
+             }
+ 
+             // v0.17: an oversized crossing can be a foreground occluder hiding
+@@ -778,6 +801,7 @@
+                 continue;
+             }
+ 
++            rejectReason = 4.0;
+             return false;
+         }
+ 
+@@ -790,6 +814,23 @@
+     return false;
+ }
+ 
++float3 TraceRejectReasonColor(float reason, bool accepted)
++{
++    if (accepted)
++        return 1.0.xxx;              // WHITE: accepted reflection hit
++    if (reason < 1.5)
++        return float3(1.0, 0.0, 0.0); // RED: ray direction rejected
++    if (reason < 2.5)
++        return float3(1.0, 0.0, 1.0); // MAGENTA: projection/off-screen failure
++    if (reason < 3.5)
++        return float3(0.0, 0.25, 1.0); // BLUE: no crossing before trace budget
++    if (reason < 4.5)
++        return float3(1.0, 0.5, 0.0); // ORANGE: oversized crossing rejected
++    if (reason < 5.5)
++        return float3(0.0, 1.0, 1.0); // CYAN: accepted geometry, zero confidence
++    return float3(1.0, 1.0, 0.0);     // YELLOW: unexpected/uncategorized
++}
++
+ float ViewFresnel(float3 viewPos, float3 normal)
+ {
+     float3 toCamera = normalize(-viewPos);
+@@ -947,7 +988,7 @@
+ {
+     // Ray-hit and raw-hit-color diagnostics test geometry/scene transport only.
+     // They must remain useful even if the material/specular semantic is missing.
+-    const bool geometryDebug = (SSRDisplayMode == 2 || SSRDisplayMode == 11 || SSRDisplayMode == 22);
++    const bool geometryDebug = (SSRDisplayMode == 2 || SSRDisplayMode == 11 || SSRDisplayMode == 22 || SSRDisplayMode == 23);
+ 
+     if (!(geometryDebug ? SSRTraceReady() : SSRReady()) ||
+         !InsideFirestormWorld(uv))
+@@ -980,8 +1021,14 @@
+     float hitDistance;
+     float confidence;
+     float disocclusionUsed;
++    float rejectReason;
+ 
+-    if (!TraceSSR(viewPos, normal, rayDir, hitUV, hitDistance, confidence, disocclusionUsed))
++    bool traceAccepted = TraceSSR(viewPos, normal, rayDir, hitUV, hitDistance, confidence, disocclusionUsed, rejectReason);
++
++    if (SSRDisplayMode == 23)
++        return float4(TraceRejectReasonColor(rejectReason, traceAccepted), 1.0);
++
++    if (!traceAccepted)
+         return 0.0;
+ 
+     if (SSRDisplayMode == 22)
+@@ -1016,6 +1063,9 @@
+     if (SSRDisplayMode == 22)
+         return float4(saturate(rawSSR.r).xxx, 1.0);
+ 
++    if (SSRDisplayMode == 23)
++        return float4(saturate(rawSSR.rgb), 1.0);
++
+     if (SSRDisplayMode == 3)
+     {
+         float m = pbr ? 0.0 : reflectivity;
+@@ -1188,10 +1238,10 @@
+     return color;
+ }
+ 
+-technique SL_SSR_v0_17_DisocclusionSkip
++technique SL_SSR_v0_18_RayRejectReasons
+ <
+-    ui_label = "SL SSR v0.17 - Disocclusion Skip";
+-    ui_tooltip = "v0.17 keeps the v0.16 energy composite and allows a limited number of oversized depth crossings to be skipped, targeting camera-dependent SSR holes caused by foreground occluders such as avatars. v0.15 PBR-alpha probe support remains available.";
++    ui_label = "SL SSR v0.18 - Ray Reject Reasons";
++    ui_tooltip = "Diagnostic-only v0.18 keeps v0.17 behavior and color-codes the exact geometry-trace termination path for missing SSR pixels. Use Ray termination reason on the persistent avatar-adjacent gap.";
+ >
+ {
+     pass Trace
