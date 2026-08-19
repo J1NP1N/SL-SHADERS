@@ -1,0 +1,106 @@
+--- /mnt/data/v15inspect/SL_SSR_v0_15_PBRAlphaProbe/SL_SSR_v0_1_LegacyFirst.fx	2026-08-19 03:11:27.000000000 +0000
++++ /mnt/data/v16work/SL_SSR_v0_16_EnergyComposite/SL_SSR_v0_1_LegacyFirst.fx	2026-08-19 03:21:01.395886078 +0000
+@@ -79,6 +79,14 @@
+     ui_min = 0.0; ui_max = 2.0; ui_step = 0.01;
+ > = 1.00;
+ 
++uniform float SSRBaseReplacement
++<
++    ui_label = "Reflection Base Replacement";
++    ui_tooltip = "Attenuates the receiver's existing scene color under valid SSR instead of only adding reflection on top. 0 = old additive composite; 1 = energy-style replacement.";
++    ui_type = "drag";
++    ui_min = 0.0; ui_max = 1.0; ui_step = 0.01;
++> = 1.00;
++
+ uniform int SSRTraceSteps
+ <
+     ui_label = "Trace Steps";
+@@ -150,8 +158,8 @@
+ 
+ uniform float LegacyGlossinessStart
+ <
+-    ui_label = "Legacy Glossiness Start (unused v0.14)";
+-    ui_tooltip = "Diagnostic compatibility control retained from older builds. v0.14 does not gate legacy SSR with specularRect alpha; Firestorm native SSR colors reflections from specularRect RGB directly.";
++    ui_label = "Legacy Glossiness Start (unused)";
++    ui_tooltip = "Diagnostic compatibility control retained from older builds. Legacy SSR does not gate reflections with specularRect alpha; Firestorm native SSR colors reflections from specularRect RGB directly.";
+     ui_type = "drag";
+     ui_min = 0.0; ui_max = 1.0; ui_step = 0.01;
+ > = 0.05;
+@@ -229,7 +237,8 @@
+         "Raw specular A\0"
+         "Raw specular RGB x32\0"
+         "Legacy no-spec fallback mask\0"
+-        "PBR alpha-blend path probe mask\0";
++        "PBR alpha-blend path probe mask\0"
++        "Reflection base removal x10\0";
+ > = 0;
+ 
+ uniform float SSRDebugGain
+@@ -1081,15 +1090,22 @@
+     float3 materialTint = pbr ? 1.0.xxx : legacyTint;
+     float3 reflectionLinear = max(rawSSR.rgb, 0.0) * weight * materialTint;
+ 
++    // Scalar energy actually applied by this material. Legacy color tint carries
++    // reflectance magnitude, while PBR reflectivity is already in weight.
++    float appliedWeight = pbr ? weight : weight * reflectivity;
++    float baseRemoval = saturate(appliedWeight * saturate(SSRBaseReplacement));
++
+     if (SSRDisplayMode == 12)
+     {
+         // Show the strongest actually-applied material channel, not just the
+         // geometry/fresnel weight. This remains useful for colored legacy specular.
+-        float applied = pbr ? weight : weight * reflectivity;
+-        float w = saturate(applied * 10.0);
++        float w = saturate(appliedWeight * 10.0);
+         return float4(w.xxx, 1.0);
+     }
+ 
++    if (SSRDisplayMode == 21)
++        return float4(saturate(baseRemoval * 10.0).xxx, 1.0);
++
+     if (SSRDisplayMode == 1)
+         return float4(DebugHDR(reflectionLinear), 1.0);
+ 
+@@ -1097,16 +1113,38 @@
+         return color;
+ 
+     float3 sceneLinear = max(GetSceneLinear(uv).rgb, 0.0);
+-    float3 delta = SLTonemapDelta(uv, sceneLinear, reflectionLinear, color.rgb);
++
++    // v0.16 EnergyComposite:
++    // The previous additive presentation left Firestorm's diffuse/shadowed
++    // receiver fully intact underneath SSR, producing a dark "shadow ghost"
++    // through otherwise-valid reflections. Preserve the reflection term, but
++    // remove the corresponding amount of receiver/base energy before tonemapping.
++    float3 compositeLinear = sceneLinear * (1.0 - baseRemoval) + reflectionLinear;
++    float3 delta;
++
++    if (SLGITonemapValid < 0.5)
++    {
++        // Preserve the established fallback when Firestorm tonemap state is not
++        // available: convert the signed linear replacement delta at the local
++        // scene-to-presentation scale instead of assuming a tonemap curve.
++        delta = (compositeLinear - sceneLinear) * SceneToPresentationScale(uv);
++    }
++    else
++    {
++        float useSRGB = SLUseSRGBEncoding(sceneLinear, color.rgb);
++        float3 presentedBefore = SLFirestormPresentation(sceneLinear, useSRGB);
++        float3 presentedAfter = SLFirestormPresentation(compositeLinear, useSRGB);
++        delta = presentedAfter - presentedBefore;
++    }
+ 
+     color.rgb = max(color.rgb + delta, 0.0);
+     return color;
+ }
+ 
+-technique SL_SSR_v0_15_PBRAlphaProbe
++technique SL_SSR_v0_16_EnergyComposite
+ <
+-    ui_label = "SL SSR v0.15 - PBR Alpha Probe";
+-    ui_tooltip = "Preserves v0.14 material response and adds a native diagnostic mask for Firestorm PBR alpha-blended forward draws. This revision locates the glass render path; it does not add glass SSR yet.";
++    ui_label = "SL SSR v0.16 - Energy Composite";
++    ui_tooltip = "Replaces receiver/base energy under valid SSR instead of only adding reflection on top. This targets dark cast-shadow ghosting visible through strong floor reflections; v0.15 PBR-alpha probe support remains available.";
+ >
+ {
+     pass Trace
