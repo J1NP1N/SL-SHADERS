@@ -1,0 +1,249 @@
+--- v0.26/SL_SSR_v0_1_LegacyFirst.fx
++++ v0.28/SL_SSR_v0_1_LegacyFirst.fx
+@@ -1,7 +1,7 @@
+-// SL_SSR_v0_26_OriginBiasAudit.fx
++// SL_SSR_v0_28_ScreenDDAPrototype.fx
+ // Firestorm-native-data screen-space reflections for ReShade.
+ //
+-// v0.26 lineage / current goals:
++// v0.28 lineage / current goals:
+ //   - legacy SL materials first
+ //   - exact Firestorm SL_DEPTH + SL_NORMALS
+ //   - exact Firestorm projection/inverse projection from SLProbeLighting
+@@ -23,6 +23,7 @@
+ //   - classify BLUE/no-hit rays by the depth samples they actually observed
+ //   - classify mixed-sign no-hit rays by actual crossing-candidate path
+ //   - decouple ray-origin self-intersection bias from Hit Thickness
++//   - optional perspective-correct screen-pixel DDA trace core with finite depth slab
+ //   - recover terminal oversized candidates that converge onto a tight foreground silhouette edge
+ //   - diagnose which silhouette-edge acceptance gate rejects remaining target candidates
+ //   - deepen binary refinement so valid silhouette crossings are not misclassified oversized
+@@ -44,6 +45,7 @@
+ 
+ #define SL_SSR_MAX_STEPS 48
+ #define SL_SSR_BINARY_STEPS 9
++#define SL_SSR_DDA_MAX_STEPS 128
+@@ -136,6 +138,30 @@
+     ui_type = "drag";
+     ui_min = 0.0; ui_max = 0.25; ui_step = 0.005;
+ > = 0.010;
++
++uniform int SSRUseScreenDDA
++<
++    ui_label = "Use Screen-Pixel DDA";
++    ui_tooltip = "Experimental trace core. 1 uses a perspective-correct screen-pixel DDA/depth-slab intersection instead of the legacy exponential 3D marcher. Material response and composite are unchanged.";
++    ui_type = "slider";
++    ui_min = 0; ui_max = 1;
++> = 1;
++
++uniform int SSRDDAMaxSteps
++<
++    ui_label = "DDA Max Pixel Steps";
++    ui_tooltip = "Maximum contiguous native Firestorm screen pixels traversed by the DDA ray.";
++    ui_type = "slider";
++    ui_min = 8; ui_max = SL_SSR_DDA_MAX_STEPS;
++> = 96;
++
++uniform float SSRDDAStride
++<
++    ui_label = "DDA Pixel Stride";
++    ui_tooltip = "Native Firestorm pixel stride. 1 gives contiguous coverage; values above 1 trade quality for speed.";
++    ui_type = "drag";
++    ui_min = 1.0; ui_max = 4.0; ui_step = 0.5;
++> = 1.0;
+@@ -328,7 +354,8 @@
+         "No-hit closest depth delta\0"
+         "No-hit crossing candidate path\0"
+         "Silhouette-edge recovered hit mask\0"
+-        "Silhouette-edge gate reason\0";
++        "Silhouette-edge gate reason\0"
++        "DDA trace status\0";
+ > = 0;
+@@ -730,6 +757,159 @@
+     float sceneDepth = -scenePos.z;
+     delta = rayDepth - sceneDepth;
+     return true;
++}
++
++bool TraceSSR_DDA(
++    float3 originPos,
++    float3 originNormal,
++    float3 rayDir,
++    out float2 hitUV,
++    out float hitDistance,
++    out float confidence,
++    out float rejectReason)
++{
++    hitUV = 0.0;
++    hitDistance = 0.0;
++    confidence = 0.0;
++    rejectReason = 3.0;
++
++    if (rayDir.z >= -0.001)
++    {
++        rejectReason = 1.0;
++        return false;
++    }
++
++    float3 csOrig = originPos + originNormal * max(SSRRayOriginBias, 0.0);
++    float3 csEnd = csOrig + rayDir * max(SSRMaxDistance, 0.01);
++
++    float4 H0 = MulProj(float4(csOrig, 1.0));
++    float4 H1 = MulProj(float4(csEnd, 1.0));
++    if (abs(H0.w) <= 1e-8 || abs(H1.w) <= 1e-8)
++    {
++        rejectReason = 2.0;
++        return false;
++    }
++
++    float k0 = 1.0 / H0.w;
++    float k1 = 1.0 / H1.w;
++    float3 Q0 = csOrig * k0;
++    float3 Q1 = csEnd * k1;
++
++    float2 viewportSize = max(SLBridgeViewport.zw, float2(1.0, 1.0));
++    float2 P0 = (H0.xy * k0 * 0.5 + 0.5) * viewportSize;
++    float2 P1 = (H1.xy * k1 * 0.5 + 0.5) * viewportSize;
++
++    float2 screenDelta = P1 - P0;
++    if (dot(screenDelta, screenDelta) < 0.0001)
++        P1 += 0.01;
++
++    float2 delta = P1 - P0;
++    bool permute = false;
++    if (abs(delta.x) < abs(delta.y))
++    {
++        permute = true;
++        delta = delta.yx;
++        P0 = P0.yx;
++        P1 = P1.yx;
++    }
++
++    float stepDir = delta.x >= 0.0 ? 1.0 : -1.0;
++    float invdx = stepDir / max(abs(delta.x), 1e-6);
++    float3 dQ = (Q1 - Q0) * invdx;
++    float dk = (k1 - k0) * invdx;
++    float2 dP = float2(stepDir, delta.y * invdx);
++
++    float stride = clamp(SSRDDAStride, 1.0, 4.0);
++    dP *= stride;
++    dQ *= stride;
++    dk *= stride;
++
++    // Skip the receiver pixel itself. The independent normal bias handles the
++    // geometric self-intersection offset; this one-pixel DDA advance prevents
++    // re-reading the exact source pixel as a reflected hit.
++    float2 P = P0 + dP;
++    float3 Q = Q0 + dQ;
++    float k = k0 + dk;
++    float end = P1.x * stepDir;
++
++    // Seed the previous ray-Z estimate at the midpoint of the skipped source
++    // pixel interval so the first tested interval remains one stride wide.
++    float firstMidK = k0 + dk * 0.5;
++    float prevRayZ = (Q0.z + dQ.z * 0.5) /
++        (abs(firstMidK) > 1e-8 ? firstMidK : (firstMidK < 0.0 ? -1e-8 : 1e-8));
++
++    [loop]
++    for (int i = 0; i < SL_SSR_DDA_MAX_STEPS; ++i)
++    {
++        if (i >= SSRDDAMaxSteps || (P.x * stepDir) > end)
++            break;
++
++        float2 nativePixel = permute ? P.yx : P;
++        if (nativePixel.x < 0.0 || nativePixel.y < 0.0 ||
++            nativePixel.x >= viewportSize.x || nativePixel.y >= viewportSize.y)
++        {
++            rejectReason = 2.0;
++            break;
++        }
++
++        float midK = k + dk * 0.5;
++        float rayZNext = (Q.z + dQ.z * 0.5) /
++            (abs(midK) > 1e-8 ? midK : (midK < 0.0 ? -1e-8 : 1e-8));
++        float rayZMin = min(prevRayZ, rayZNext);
++        float rayZMax = max(prevRayZ, rayZNext);
++        prevRayZ = rayZNext;
++
++        float2 nativeUV = (floor(nativePixel) + 0.5) / viewportSize;
++        if (nativeUV.x > 0.0 && nativeUV.x < 1.0 &&
++            nativeUV.y > 0.0 && nativeUV.y < 1.0)
++        {
++            float2 candidateUV = ScreenUVFromFirestormUV(nativeUV);
++            float rawDepth = GetRawDepth(candidateUV);
++
++            if (!IsBackgroundDepth(rawDepth))
++            {
++                float sceneZ = ReconstructViewPosition(candidateUV, rawDepth).z;
++                bool overlapsDepthSlab =
++                    rayZMax >= (sceneZ - max(SSRThickness, 0.0)) &&
++                    rayZMin < sceneZ;
++
++                if (overlapsDepthSlab)
++                {
++                    float safeK = abs(k) > 1e-8 ? k : (k < 0.0 ? -1e-8 : 1e-8);
++                    float3 hitPoint = Q / safeK;
++                    float dist = length(hitPoint - csOrig);
++
++                    hitUV = candidateUV;
++                    hitDistance = dist;
++                    confidence = EdgeConfidence(candidateUV) * DistanceConfidence(dist);
++                    if (confidence > 0.0)
++                    {
++                        rejectReason = 0.0;
++                        return true;
++                    }
++
++                    rejectReason = 5.0;
++                    return false;
++                }
++            }
++        }
++
++        P += dP;
++        Q += dQ;
++        k += dk;
++    }
++
++    return false;
+ }
+@@ -1257,7 +1437,7 @@
+-    const bool geometryDebug = (SSRDisplayMode == 2 || SSRDisplayMode == 11 || SSRDisplayMode == 22 || SSRDisplayMode == 23 || SSRDisplayMode == 24 || SSRDisplayMode == 25 || SSRDisplayMode == 26 || SSRDisplayMode == 27 || SSRDisplayMode == 28 || SSRDisplayMode == 29);
++    const bool geometryDebug = (SSRDisplayMode == 2 || SSRDisplayMode == 11 || SSRDisplayMode == 22 || SSRDisplayMode == 23 || SSRDisplayMode == 24 || SSRDisplayMode == 25 || SSRDisplayMode == 26 || SSRDisplayMode == 27 || SSRDisplayMode == 28 || SSRDisplayMode == 29 || SSRDisplayMode == 30);
+@@ -1290,7 +1470,26 @@
+-    bool traceAccepted = TraceSSR(viewPos, normal, rayDir, hitUV, hitDistance, confidence, disocclusionUsed, backgroundEntryUsed, rejectReason, noHitHistoryClass, minAbsDepthDelta, crossingPathClass, silhouetteEdgeUsed, silhouetteGateClass);
++    bool traceAccepted = false;
++    if (SSRUseScreenDDA > 0)
++    {
++        disocclusionUsed = 0.0;
++        backgroundEntryUsed = 0.0;
++        noHitHistoryClass = 0.0;
++        minAbsDepthDelta = 1e6;
++        crossingPathClass = 0.0;
++        silhouetteEdgeUsed = 0.0;
++        silhouetteGateClass = 0.0;
++        traceAccepted = TraceSSR_DDA(viewPos, normal, rayDir, hitUV, hitDistance, confidence, rejectReason);
++    }
++    else
++    {
++        traceAccepted = TraceSSR(viewPos, normal, rayDir, hitUV, hitDistance, confidence, disocclusionUsed, backgroundEntryUsed, rejectReason, noHitHistoryClass, minAbsDepthDelta, crossingPathClass, silhouetteEdgeUsed, silhouetteGateClass);
++    }
+@@ -1318,6 +1517,9 @@
+     if (SSRDisplayMode == 29)
+         return float4(SilhouetteGateColor(silhouetteGateClass, traceAccepted, silhouetteEdgeUsed, rejectReason), 1.0);
++
++    if (SSRDisplayMode == 30)
++        return float4(TraceRejectReasonColor(rejectReason, traceAccepted), 1.0);
+@@ -1378,7 +1580,7 @@
+-    if (SSRDisplayMode == 25 || SSRDisplayMode == 26 || SSRDisplayMode == 27 || SSRDisplayMode == 28 || SSRDisplayMode == 29)
++    if (SSRDisplayMode == 25 || SSRDisplayMode == 26 || SSRDisplayMode == 27 || SSRDisplayMode == 28 || SSRDisplayMode == 29 || SSRDisplayMode == 30)
+@@ -1567,10 +1769,10 @@
+-technique SL_SSR_v0_26_OriginBiasAudit
++technique SL_SSR_v0_28_ScreenDDAPrototype
+ <
+-    ui_label = "SL SSR v0.26 - Origin Bias Audit";
+-    ui_tooltip = "v0.26 preserves the v0.25 diagnostics but decouples ray-origin self-intersection bias from Hit Thickness. Use 0.010 as the corrected baseline and 0.135 to reproduce the old effective bias at Hit Thickness 0.18.";
++    ui_label = "SL SSR v0.28 - Screen DDA Prototype";
++    ui_tooltip = "Experimental v0.28 adds a perspective-correct screen-pixel DDA/depth-slab trace core. Toggle Use Screen-Pixel DDA to compare against the legacy exponential marcher without changing material response or composite.";
+ >
+ {
