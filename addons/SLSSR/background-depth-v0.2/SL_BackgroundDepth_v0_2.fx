@@ -31,7 +31,12 @@ uniform int SLBackgroundDepthDisplay
         "Recovered-behind-primary mask\0"
         "Primary NATIVE linear depth\0"
         "Background NATIVE linear depth\0"
-        "Signed background minus primary\0";
+        "Signed background minus primary\0"
+        "Primary NATIVE RAW\0"
+        "Background NATIVE RAW\0"
+        "Primary RAW inverted x256\0"
+        "Background RAW inverted x256\0"
+        "RAW signed bg-primary x4096\0";
 > = 1;
 
 uniform float SLBackgroundDepthGap
@@ -165,6 +170,35 @@ float4 BackgroundDepthDebugPS(float4 pos : SV_Position, float2 uv : TEXCOORD) : 
     float primaryRaw = tex2D(SLPrimaryNativeDepthSampler, nativeUV).r;
     float backgroundRaw = tex2D(SLBackgroundDepthSampler, nativeUV).r;
 
+    // Raw-depth diagnostics deliberately bypass projection/linearization.
+    if (SLBackgroundDepthDisplay == 7)
+        return float4(primaryRaw.xxx, 1.0);
+
+    if (SLBackgroundDepthDisplay == 8)
+        return float4(backgroundRaw.xxx, 1.0);
+
+    if (SLBackgroundDepthDisplay == 9)
+    {
+        float v = saturate((1.0 - primaryRaw) * 256.0);
+        return float4(v.xxx, 1.0);
+    }
+
+    if (SLBackgroundDepthDisplay == 10)
+    {
+        float v = saturate((1.0 - backgroundRaw) * 256.0);
+        return float4(v.xxx, 1.0);
+    }
+
+    if (SLBackgroundDepthDisplay == 11)
+    {
+        float d = (backgroundRaw - primaryRaw) * 4096.0;
+        if (d > 0.0)
+            return float4(0.0, saturate(d), 0.0, 1.0);
+        if (d < 0.0)
+            return float4(saturate(-d), 0.0, saturate(-d), 1.0);
+        return float4(0.0, 0.0, 0.0, 1.0);
+    }
+
     bool primaryGeom = !IsBackground(primaryRaw);
     bool backgroundGeom = !IsBackground(backgroundRaw);
 
@@ -200,12 +234,12 @@ float4 BackgroundDepthDebugPS(float4 pos : SV_Position, float2 uv : TEXCOORD) : 
     float deltaViz = DepthViz(abs(signedDelta) * 8.0);
 
     if (signedDelta > 0.0)
-        return float4(0.0, deltaViz, 0.0, 1.0);   // green = background farther
+        return float4(0.0, deltaViz, 0.0, 1.0);
 
     if (signedDelta < 0.0)
-        return float4(deltaViz, 0.0, deltaViz, 1.0); // magenta = background nearer
+        return float4(deltaViz, 0.0, deltaViz, 1.0);
 
-    return float4(0.0, 0.0, 0.0, 1.0); // black = equal
+    return float4(0.0, 0.0, 0.0, 1.0);
 }
 
 technique SL_BackgroundDepth_v0_2
