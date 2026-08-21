@@ -1,23 +1,18 @@
-# Current SSR FX source transfer status
+# Current SSR FX backbone
 
-The v0.31-v0.34 session bundle contains the full current shader source at the intended path:
+Current integration baseline: `SL_SSR_v0_49_AvatarThicknessTrace.fx`.
 
-`addons/SLSSR/current-fx/SL_SSR_v0_1_LegacyFirst.fx`
+Native inputs:
 
-Verified bundle object:
+- D0 — `SL_DEPTH_PRIMARY_NATIVE`
+- Dstatic — `SL_DEPTH_BACKGROUND`
+- Cstatic — `SL_COLOR_BACKGROUND`
+- DavatarBack — `SL_DEPTH_AVATAR_BACK`
 
-- Git blob SHA: `08f9c78e0eeb50ec9c3f08c0e278afc9f841a78a`
-- size: 69,778 bytes
-- technique: `SL SSR v0.34 - Ghost Cull`
+v0.49 uses independent world and avatar traces. The world branch is Dstatic/Cstatic. The avatar branch accepts geometry only inside the native `[D0,DavatarBack]` interval.
 
-The connected GitHub write interface in the importing chat did not expose a reliable local-file upload path for this 69 KB source file, so the normal `.fx` file is **not yet present here**. Do not claim otherwise.
+The original secondary avatar-shaped ghost is essentially fixed. Current work should target static-world resolve/tracing quality, temporal stability, or Hi-Z without altering the proven avatar-thickness architecture.
 
-The exact v0.30 -> v0.34 source delta is committed at:
+The exact v0.49 source is archived under `v0.49-source/` as gzip+base64 chunks because this connector cannot upload a local artifact directly. Run `restore_v0.49.py` in that directory to reconstruct `SL_SSR_v0_49_AvatarThicknessTrace.fx` byte-for-byte.
 
-`history/ssr/ssr-v0.30-to-v0.34-session.patch`
-
-The exact uploaded bundle is identified/checksummed at:
-
-`history/ssr/SSR_v0.31-v0.34_BUNDLE_PROVENANCE.md`
-
-Next time a direct repository file-upload path is available, import the full FX and verify that GitHub reports blob SHA `08f9c78e0eeb50ec9c3f08c0e278afc9f841a78a`; then replace this transfer-status note with the actual source file.
+See `docs/HANDOFF.md` and `docs/BACKBONE_v0.49.md` before branching.
