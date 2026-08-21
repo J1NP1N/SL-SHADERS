@@ -611,7 +611,7 @@ float GTAOComputeVisibility(float2 screenUV)
             (GTAOArcIntegral(h0, n, cosN, sinN) +
              GTAOArcIntegral(h1, n, cosN, sinN));
 
-        visibilitySum += saturate(sliceVisibility);
+        visibilitySum += sliceVisibility;
     }
 
     return saturate(visibilitySum / float(activeSlices));
