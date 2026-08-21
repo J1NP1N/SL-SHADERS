@@ -1,0 +1,3 @@
+CORE+SPATIAL — Full-Res Pixel Mapping v0.3
+Runtime milestone head marker.
+Expected FX SHA-256: 0da5556600465b14972b0f7494f4f2f6c5bc3683f8dc747022a7f4933371a5ce
