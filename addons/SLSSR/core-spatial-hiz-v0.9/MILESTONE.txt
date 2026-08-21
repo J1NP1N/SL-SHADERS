@@ -1,0 +1,3 @@
+CORE+SPATIAL — Hi-Z v0.53 WORLD A/B v0.9
+Pre-Hi-Z full-resolution raster mapping correction: SV_Position pixel identity + tex2Dfetch same-pixel internal RT reads.
+Expected FX SHA-256: 70d33f4dbc62bb35f65b8d2a9420afa96fdd4bb14aca6e70b974d09469bc6e52
