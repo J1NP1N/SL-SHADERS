@@ -1,0 +1,3 @@
+CORE+SPATIAL — Hi-Z v0.53 WORLD A/B v1.0
+Restores exact v0.49 normalized-TEXCOORD raster addressing and isolates all private SSR/Hi-Z intermediate texture names from older loaded effects.
+Expected FX SHA-256: 715deb015938b879ae9a23cd24f1cc26adac2ffe3d731f9edaf70a911e0bb755
