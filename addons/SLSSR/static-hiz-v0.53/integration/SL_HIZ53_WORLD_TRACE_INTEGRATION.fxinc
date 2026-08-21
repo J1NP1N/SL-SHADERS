@@ -1,0 +1,520 @@
+// SL_HIZ53_WORLD_TRACE_INTEGRATION.fxinc
+// Production transplant block extracted from validated standalone Hi-Z v0.53.
+//
+// WORLD geometry only: Dstatic = SL_DEPTH_BACKGROUND.
+// WORLD hit color only: Cstatic = SL_COLOR_BACKGROUND.
+// Receiver setup may read D0 + normals, but trace candidates NEVER use D0/DavatarBack.
+// No pixel DDA. No avatar tracing.
+//
+// Integration assumptions:
+// - CORE already includes ReShade.fxh and declares the v0.49 bridge uniforms:
+//   SLBridgeViewport, SLBridgeBufferInfo, SLBridgeRegistrationValid,
+//   SLGIInvProjC0..3, SLGIProjC0..3, SLGIProjectionValid, SLProbeNativeValid.
+// - CORE already declares these samplers, or aliases them before this include:
+//   SLPrimaryNativeDepthSampler : SL_DEPTH_PRIMARY_NATIVE
+//   SLStaticDepthSampler        : SL_DEPTH_BACKGROUND
+//   SLStaticColorSampler        : SL_COLOR_BACKGROUND
+//   SLNativeNormalsSampler      : SL_NORMALS
+//
+// Optional aliases if CORE uses different sampler names:
+// #define SLH53_PRIMARY_DEPTH_SAMPLER <sampler>
+// #define SLH53_STATIC_DEPTH_SAMPLER  <sampler>
+// #define SLH53_STATIC_COLOR_SAMPLER  <sampler>
+// #define SLH53_NORMALS_SAMPLER       <sampler>
+
+#ifndef SLH53_PRIMARY_DEPTH_SAMPLER
+#define SLH53_PRIMARY_DEPTH_SAMPLER SLPrimaryNativeDepthSampler
+#endif
+#ifndef SLH53_STATIC_DEPTH_SAMPLER
+#define SLH53_STATIC_DEPTH_SAMPLER SLStaticDepthSampler
+#endif
+#ifndef SLH53_STATIC_COLOR_SAMPLER
+#define SLH53_STATIC_COLOR_SAMPLER SLStaticColorSampler
+#endif
+#ifndef SLH53_NORMALS_SAMPLER
+#define SLH53_NORMALS_SAMPLER SLNativeNormalsSampler
+#endif
+
+#define SLH53_LEVELS 10
+#define SLH53_TOP_MIP 9
+#define SLH53_MAX_ITERS 256
+#define SLH53_EMPTY 65504.0
+
+#define SLH53_W0 BUFFER_WIDTH
+#define SLH53_H0 BUFFER_HEIGHT
+#define SLH53_W1 ((SLH53_W0 + 1) / 2)
+#define SLH53_H1 ((SLH53_H0 + 1) / 2)
+#define SLH53_W2 ((SLH53_W1 + 1) / 2)
+#define SLH53_H2 ((SLH53_H1 + 1) / 2)
+#define SLH53_W3 ((SLH53_W2 + 1) / 2)
+#define SLH53_H3 ((SLH53_H2 + 1) / 2)
+#define SLH53_W4 ((SLH53_W3 + 1) / 2)
+#define SLH53_H4 ((SLH53_H3 + 1) / 2)
+#define SLH53_W5 ((SLH53_W4 + 1) / 2)
+#define SLH53_H5 ((SLH53_H4 + 1) / 2)
+#define SLH53_W6 ((SLH53_W5 + 1) / 2)
+#define SLH53_H6 ((SLH53_H5 + 1) / 2)
+#define SLH53_W7 ((SLH53_W6 + 1) / 2)
+#define SLH53_H7 ((SLH53_H6 + 1) / 2)
+#define SLH53_W8 ((SLH53_W7 + 1) / 2)
+#define SLH53_H8 ((SLH53_H7 + 1) / 2)
+#define SLH53_W9 ((SLH53_W8 + 1) / 2)
+#define SLH53_H9 ((SLH53_H8 + 1) / 2)
+
+// Validated v0.53 correctness settings. Keep these values for first CORE transplant.
+uniform int SLH53StartMip = 6;
+uniform int SLH53MaxIterations = 192;
+uniform float SLH53MaxDistance = 48.0;
+uniform float SLH53OriginBias = 0.02;
+uniform float SLH53InitialTravel = 0.04;
+uniform float SLH53Thickness = 0.12;
+uniform float SLH53FrontTolerance = 0.003;
+uniform float SLH53DiscontinuityTolerance = 0.20;
+uniform float SLH53TileEpsilonPx = 0.02;
+uniform int SLH53RefineSteps = 6;
+uniform float SLH53GrazingBacktrackPx = 2.0;
+
+// Ten explicit min/max levels. Empty = [SLH53_EMPTY, 0].
+texture SLH53L0Tex { Width=SLH53_W0; Height=SLH53_H0; Format=RG32F; };
+texture SLH53L1Tex { Width=SLH53_W1; Height=SLH53_H1; Format=RG32F; };
+texture SLH53L2Tex { Width=SLH53_W2; Height=SLH53_H2; Format=RG32F; };
+texture SLH53L3Tex { Width=SLH53_W3; Height=SLH53_H3; Format=RG32F; };
+texture SLH53L4Tex { Width=SLH53_W4; Height=SLH53_H4; Format=RG32F; };
+texture SLH53L5Tex { Width=SLH53_W5; Height=SLH53_H5; Format=RG32F; };
+texture SLH53L6Tex { Width=SLH53_W6; Height=SLH53_H6; Format=RG32F; };
+texture SLH53L7Tex { Width=SLH53_W7; Height=SLH53_H7; Format=RG32F; };
+texture SLH53L8Tex { Width=SLH53_W8; Height=SLH53_H8; Format=RG32F; };
+texture SLH53L9Tex { Width=SLH53_W9; Height=SLH53_H9; Format=RG32F; };
+
+sampler SLH53L0Sampler { Texture=SLH53L0Tex; AddressU=CLAMP; AddressV=CLAMP; MinFilter=POINT; MagFilter=POINT; MipFilter=POINT; };
+sampler SLH53L1Sampler { Texture=SLH53L1Tex; AddressU=CLAMP; AddressV=CLAMP; MinFilter=POINT; MagFilter=POINT; MipFilter=POINT; };
+sampler SLH53L2Sampler { Texture=SLH53L2Tex; AddressU=CLAMP; AddressV=CLAMP; MinFilter=POINT; MagFilter=POINT; MipFilter=POINT; };
+sampler SLH53L3Sampler { Texture=SLH53L3Tex; AddressU=CLAMP; AddressV=CLAMP; MinFilter=POINT; MagFilter=POINT; MipFilter=POINT; };
+sampler SLH53L4Sampler { Texture=SLH53L4Tex; AddressU=CLAMP; AddressV=CLAMP; MinFilter=POINT; MagFilter=POINT; MipFilter=POINT; };
+sampler SLH53L5Sampler { Texture=SLH53L5Tex; AddressU=CLAMP; AddressV=CLAMP; MinFilter=POINT; MagFilter=POINT; MipFilter=POINT; };
+sampler SLH53L6Sampler { Texture=SLH53L6Tex; AddressU=CLAMP; AddressV=CLAMP; MinFilter=POINT; MagFilter=POINT; MipFilter=POINT; };
+sampler SLH53L7Sampler { Texture=SLH53L7Tex; AddressU=CLAMP; AddressV=CLAMP; MinFilter=POINT; MagFilter=POINT; MipFilter=POINT; };
+sampler SLH53L8Sampler { Texture=SLH53L8Tex; AddressU=CLAMP; AddressV=CLAMP; MinFilter=POINT; MagFilter=POINT; MipFilter=POINT; };
+sampler SLH53L9Sampler { Texture=SLH53L9Tex; AddressU=CLAMP; AddressV=CLAMP; MinFilter=POINT; MagFilter=POINT; MipFilter=POINT; };
+
+bool SLH53HasBridgeRegistration()
+{
+    return SLBridgeRegistrationValid > 0.5 &&
+           SLBridgeViewport.z > 1.0 && SLBridgeViewport.w > 1.0 &&
+           SLBridgeBufferInfo.x > 1.0 && SLBridgeBufferInfo.y > 1.0;
+}
+
+bool SLH53HasExactMatrices()
+{
+    float invEnergy=dot(abs(SLGIInvProjC0),1.0)+dot(abs(SLGIInvProjC1),1.0)+dot(abs(SLGIInvProjC2),1.0)+dot(abs(SLGIInvProjC3),1.0);
+    float projEnergy=dot(abs(SLGIProjC0),1.0)+dot(abs(SLGIProjC1),1.0)+dot(abs(SLGIProjC2),1.0)+dot(abs(SLGIProjC3),1.0);
+    return SLH53HasBridgeRegistration() && SLGIProjectionValid > 0.5 && SLProbeNativeValid > 0.5 && invEnergy > 0.01 && projEnergy > 0.01;
+}
+
+float2 SLH53FirestormUV(float2 screenUV)
+{
+    if(!SLH53HasBridgeRegistration()) return float2(-2.0,-2.0);
+    float2 windowPxGL=float2(screenUV.x*SLBridgeBufferInfo.x,(1.0-screenUV.y)*SLBridgeBufferInfo.y);
+    return (windowPxGL-SLBridgeViewport.xy)/SLBridgeViewport.zw;
+}
+
+float2 SLH53ScreenUVFromFirestormUV(float2 nativeUV)
+{
+    float2 windowPxGL=SLBridgeViewport.xy+nativeUV*SLBridgeViewport.zw;
+    return float2(windowPxGL.x/SLBridgeBufferInfo.x,1.0-windowPxGL.y/SLBridgeBufferInfo.y);
+}
+
+bool SLH53InsideScreen(float2 uv){return uv.x>=0.0&&uv.x<=1.0&&uv.y>=0.0&&uv.y<=1.0;}
+bool SLH53InsideFirestormWorld(float2 screenUV)
+{
+    float2 uv=SLH53FirestormUV(screenUV);
+    return uv.x>=0.0&&uv.x<=1.0&&uv.y>=0.0&&uv.y<=1.0;
+}
+
+float4 SLH53MulInvProj(float4 v){return SLGIInvProjC0*v.x+SLGIInvProjC1*v.y+SLGIInvProjC2*v.z+SLGIInvProjC3*v.w;}
+float4 SLH53MulProj(float4 v){return SLGIProjC0*v.x+SLGIProjC1*v.y+SLGIProjC2*v.z+SLGIProjC3*v.w;}
+bool SLH53IsBackgroundDepth(float d){return d<=0.000001||d>=0.999999;}
+
+float3 SLH53ReconstructViewPosition(float2 screenUV,float rawDepth)
+{
+    float2 nativeUV=SLH53FirestormUV(screenUV);
+    float4 p=SLH53MulInvProj(float4(nativeUV*2.0-1.0,rawDepth*2.0-1.0,1.0));
+    float safeW=abs(p.w)>1e-8?p.w:(p.w<0.0?-1e-8:1e-8);
+    return p.xyz/safeW;
+}
+
+float SLH53LinearStaticDepth(float2 screenUV,float rawDepth)
+{
+    if(SLH53IsBackgroundDepth(rawDepth))return 0.0;
+    return max(-SLH53ReconstructViewPosition(screenUV,rawDepth).z,0.0);
+}
+
+float SLH53SampleStaticDepthLinear(float2 screenUV)
+{
+    if(!SLH53InsideScreen(screenUV)||!SLH53InsideFirestormWorld(screenUV)||!SLH53HasExactMatrices())return 0.0;
+    float raw=tex2D(SLH53_STATIC_DEPTH_SAMPLER,SLH53FirestormUV(screenUV)).r;
+    return SLH53LinearStaticDepth(screenUV,raw);
+}
+
+float3 SLH53DecodeFirestormNormalRaw(float4 encodedNormal)
+{
+    float2 fenc=encodedNormal.xy*4.0-2.0;
+    float f=dot(fenc,fenc);
+    float g=sqrt(saturate(1.0-f*0.25));
+    float3 n;n.xy=fenc*g;n.z=1.0-f*0.5;
+    float len2=dot(n,n);return len2>1e-8?n*rsqrt(len2):float3(0.0,0.0,1.0);
+}
+
+// Pyramid build.
+float4 SLH53Level0PS(float4 pos:SV_Position,float2 uv:TEXCOORD):SV_Target
+{
+    if(!SLH53HasExactMatrices()||!SLH53InsideFirestormWorld(uv))return float4(SLH53_EMPTY,0.0,0.0,1.0);
+    float raw=tex2D(SLH53_STATIC_DEPTH_SAMPLER,SLH53FirestormUV(uv)).r;
+    float d=SLH53LinearStaticDepth(uv,raw);
+    return d>0.0?float4(d,d,0.0,1.0):float4(SLH53_EMPTY,0.0,0.0,1.0);
+}
+
+void SLH53AccumulateInterval(float2 iv,inout float mn,inout float mx,inout float occupied)
+{
+    if(iv.y>0.0&&iv.x<=iv.y&&iv.x<SLH53_EMPTY*0.5)
+    {
+        mn=min(mn,iv.x);mx=max(mx,iv.y);occupied=1.0;
+    }
+}
+
+#define SLH53_DECL_REDUCE_PS(NAME,SAMPLER_NAME,SRC_W,SRC_H) \
+float4 NAME(float4 pos:SV_Position,float2 uv:TEXCOORD):SV_Target \
+{ \
+    float2 srcSize=float2(SRC_W,SRC_H); \
+    float2 base=floor(pos.xy)*2.0; \
+    float mn=SLH53_EMPTY,mx=0.0,occupied=0.0; \
+    float2 c=base; \
+    if(c.x<srcSize.x&&c.y<srcSize.y)SLH53AccumulateInterval(tex2D(SAMPLER_NAME,(c+0.5)/srcSize).rg,mn,mx,occupied); \
+    c=base+float2(1.0,0.0); \
+    if(c.x<srcSize.x&&c.y<srcSize.y)SLH53AccumulateInterval(tex2D(SAMPLER_NAME,(c+0.5)/srcSize).rg,mn,mx,occupied); \
+    c=base+float2(0.0,1.0); \
+    if(c.x<srcSize.x&&c.y<srcSize.y)SLH53AccumulateInterval(tex2D(SAMPLER_NAME,(c+0.5)/srcSize).rg,mn,mx,occupied); \
+    c=base+float2(1.0,1.0); \
+    if(c.x<srcSize.x&&c.y<srcSize.y)SLH53AccumulateInterval(tex2D(SAMPLER_NAME,(c+0.5)/srcSize).rg,mn,mx,occupied); \
+    return occupied>0.5?float4(mn,mx,0.0,1.0):float4(SLH53_EMPTY,0.0,0.0,1.0); \
+}
+
+SLH53_DECL_REDUCE_PS(SLH53Level1PS,SLH53L0Sampler,SLH53_W0,SLH53_H0)
+SLH53_DECL_REDUCE_PS(SLH53Level2PS,SLH53L1Sampler,SLH53_W1,SLH53_H1)
+SLH53_DECL_REDUCE_PS(SLH53Level3PS,SLH53L2Sampler,SLH53_W2,SLH53_H2)
+SLH53_DECL_REDUCE_PS(SLH53Level4PS,SLH53L3Sampler,SLH53_W3,SLH53_H3)
+SLH53_DECL_REDUCE_PS(SLH53Level5PS,SLH53L4Sampler,SLH53_W4,SLH53_H4)
+SLH53_DECL_REDUCE_PS(SLH53Level6PS,SLH53L5Sampler,SLH53_W5,SLH53_H5)
+SLH53_DECL_REDUCE_PS(SLH53Level7PS,SLH53L6Sampler,SLH53_W6,SLH53_H6)
+SLH53_DECL_REDUCE_PS(SLH53Level8PS,SLH53L7Sampler,SLH53_W7,SLH53_H7)
+SLH53_DECL_REDUCE_PS(SLH53Level9PS,SLH53L8Sampler,SLH53_W8,SLH53_H8)
+
+float2 SLH53LevelSize(int mip)
+{
+    if(mip<=0)return float2(SLH53_W0,SLH53_H0);if(mip==1)return float2(SLH53_W1,SLH53_H1);
+    if(mip==2)return float2(SLH53_W2,SLH53_H2);if(mip==3)return float2(SLH53_W3,SLH53_H3);
+    if(mip==4)return float2(SLH53_W4,SLH53_H4);if(mip==5)return float2(SLH53_W5,SLH53_H5);
+    if(mip==6)return float2(SLH53_W6,SLH53_H6);if(mip==7)return float2(SLH53_W7,SLH53_H7);
+    if(mip==8)return float2(SLH53_W8,SLH53_H8);return float2(SLH53_W9,SLH53_H9);
+}
+
+float2 SLH53LookupUV(float2 screenUV,int mip)
+{
+    float tile=exp2((float)mip);
+    float2 fullSize=float2(BUFFER_WIDTH,BUFFER_HEIGHT);
+    float2 px=clamp(screenUV*fullSize,0.0,fullSize-1.0);
+    float2 cell=floor(px/tile);
+    return (cell+0.5)/SLH53LevelSize(mip);
+}
+
+float2 SLH53SampleInterval(float2 screenUV,int mip)
+{
+    float2 u=SLH53LookupUV(screenUV,mip);
+    if(mip<=0)return tex2D(SLH53L0Sampler,u).rg;
+    if(mip==1)return tex2D(SLH53L1Sampler,u).rg;
+    if(mip==2)return tex2D(SLH53L2Sampler,u).rg;
+    if(mip==3)return tex2D(SLH53L3Sampler,u).rg;
+    if(mip==4)return tex2D(SLH53L4Sampler,u).rg;
+    if(mip==5)return tex2D(SLH53L5Sampler,u).rg;
+    if(mip==6)return tex2D(SLH53L6Sampler,u).rg;
+    if(mip==7)return tex2D(SLH53L7Sampler,u).rg;
+    if(mip==8)return tex2D(SLH53L8Sampler,u).rg;
+    return tex2D(SLH53L9Sampler,u).rg;
+}
+
+struct SLH53ScreenRay
+{
+    float2 uv0;
+    float2 uv1;
+    float3 q0;
+    float3 q1;
+    float k0;
+    float k1;
+    float2 dpx;
+    float maxDistance;
+};
+
+bool SLH53ProjectUnclipped(float3 viewPos,out float2 screenUV,out float clipW)
+{
+    float4 clip=SLH53MulProj(float4(viewPos,1.0));
+    clipW=clip.w;
+    if(abs(clip.w)<=1e-7)return false;
+    float2 nativeUV=(clip.xy/clip.w)*0.5+0.5;
+    screenUV=SLH53ScreenUVFromFirestormUV(nativeUV);
+    return true;
+}
+
+bool SLH53BuildScreenRay(float3 startPos,float3 rayDir,float maxDistance,out SLH53ScreenRay r)
+{
+    r.uv0=0.0;r.uv1=0.0;r.q0=0.0;r.q1=0.0;r.k0=0.0;r.k1=0.0;r.dpx=0.0;r.maxDistance=0.0;
+    float distanceLimit=max(maxDistance,0.0);
+    if(rayDir.z>1e-6)
+    {
+        float cameraLimit=(-0.02-startPos.z)/rayDir.z;
+        distanceLimit=min(distanceLimit,cameraLimit);
+    }
+    if(distanceLimit<=0.01)return false;
+    float3 endPos=startPos+rayDir*distanceLimit;
+    float w0=0.0,w1=0.0;
+    if(!SLH53ProjectUnclipped(startPos,r.uv0,w0)||!SLH53ProjectUnclipped(endPos,r.uv1,w1))return false;
+    if(w0<=1e-7||w1<=1e-7)return false;
+    r.k0=1.0/w0;r.k1=1.0/w1;r.q0=startPos*r.k0;r.q1=endPos*r.k1;
+    r.dpx=(r.uv1-r.uv0)*float2(BUFFER_WIDTH,BUFFER_HEIGHT);
+    r.maxDistance=distanceLimit;
+    return length(r.dpx)>0.25;
+}
+
+float2 SLH53RayUV(SLH53ScreenRay r,float lambda){return lerp(r.uv0,r.uv1,saturate(lambda));}
+float3 SLH53RayView(SLH53ScreenRay r,float lambda)
+{
+    float k=lerp(r.k0,r.k1,saturate(lambda));
+    float safeK=abs(k)>1e-8?k:(k<0.0?-1e-8:1e-8);
+    return lerp(r.q0,r.q1,saturate(lambda))/safeK;
+}
+float SLH53RayDepth(SLH53ScreenRay r,float lambda){return max(-SLH53RayView(r,lambda).z,0.0);}
+float SLH53RayDistance(SLH53ScreenRay r,float lambda){return length(SLH53RayView(r,lambda)-SLH53RayView(r,0.0));}
+
+float SLH53TileExitLambda(SLH53ScreenRay r,float lambda,int mip)
+{
+    float2 fullSize=float2(BUFFER_WIDTH,BUFFER_HEIGHT);
+    float2 uv=SLH53RayUV(r,lambda);
+    float2 px=uv*fullSize;
+    float tile=exp2((float)mip);
+    float2 s=float2(r.dpx.x>=0.0?1.0:-1.0,r.dpx.y>=0.0?1.0:-1.0);
+    float2 nudge=px+s*0.0001;
+    float2 cell=floor(nudge/tile);
+    float bx=r.dpx.x>=0.0?(cell.x+1.0)*tile:cell.x*tile;
+    float by=r.dpx.y>=0.0?(cell.y+1.0)*tile:cell.y*tile;
+    float tx=1e20,ty=1e20;
+    if(abs(r.dpx.x)>1e-8){float t=(bx-px.x)/r.dpx.x;if(t>1e-8)tx=t;}
+    if(abs(r.dpx.y)>1e-8){float t=(by-px.y)/r.dpx.y;if(t>1e-8)ty=t;}
+    float dt=min(tx,ty);
+    if(dt>=1e19)return 1.0;
+    return min(lambda+dt,1.0);
+}
+
+// WORLD trace entry point.
+// Returns only Dstatic geometry. Caller samples Cstatic and feeds the existing CORE
+// WORLD result/composite. No diagnostics, avatar data, or resolve policy are included.
+bool SLH53TraceWorld(float2 receiverUV,out float2 hitUV,out float hitDistance)
+{
+    hitUV=0.0;hitDistance=0.0;
+
+    if(!SLH53HasExactMatrices())return false;
+    if(!SLH53InsideFirestormWorld(receiverUV))return false;
+
+    // D0 is receiver setup only; it is never a WORLD candidate source.
+    float2 nativeUV=SLH53FirestormUV(receiverUV);
+    float receiverRaw=tex2D(SLH53_PRIMARY_DEPTH_SAMPLER,nativeUV).r;
+    if(SLH53IsBackgroundDepth(receiverRaw))return false;
+    float3 receiverPos=SLH53ReconstructViewPosition(receiverUV,receiverRaw);
+    float3 receiverNormal=SLH53DecodeFirestormNormalRaw(tex2D(SLH53_NORMALS_SAMPLER,nativeUV));
+    float3 incident=normalize(receiverPos);
+    float3 rayDir=normalize(reflect(incident,receiverNormal));
+
+    float3 startPos=receiverPos+receiverNormal*max(SLH53OriginBias,0.0)+rayDir*max(SLH53InitialTravel,0.0);
+    SLH53ScreenRay r;
+    if(!SLH53BuildScreenRay(startPos,rayDir,max(SLH53MaxDistance,0.01),r))return false;
+
+    int startMip=clamp(SLH53StartMip,1,SLH53_TOP_MIP);
+    int mip=startMip;
+    float lambda=0.0;
+    float lineLen=max(length(r.dpx),1e-5);
+    float epsLambda=max(SLH53TileEpsilonPx,0.001)/lineLen;
+    float grazingBackLambda=max(SLH53GrazingBacktrackPx,0.25)/lineLen;
+
+    [loop]
+    for(int i=0;i<SLH53_MAX_ITERS;++i)
+    {
+        if(i>=SLH53MaxIterations)break;
+        if(lambda>=1.0)break;
+
+        float2 uv=SLH53RayUV(r,lambda);
+        if(!SLH53InsideScreen(uv)||!SLH53InsideFirestormWorld(uv))break;
+
+        float exitLambda=SLH53TileExitLambda(r,lambda,mip);
+        exitLambda=max(exitLambda,lambda+epsLambda);
+        exitLambda=min(exitLambda,1.0);
+
+        float2 sampleUV=SLH53RayUV(r,(lambda+exitLambda)*0.5);
+        float2 scene=SLH53SampleInterval(sampleUV,mip);
+        bool occupied=scene.y>0.0&&scene.x<=scene.y&&scene.x<SLH53_EMPTY*0.5;
+        float d0=SLH53RayDepth(r,lambda);
+        float d1=SLH53RayDepth(r,exitLambda);
+        float rayMin=min(d0,d1),rayMax=max(d0,d1);
+        float front=max(SLH53FrontTolerance,0.0);
+        float back=max(SLH53Thickness,front+0.0001);
+        bool overlap=occupied&&rayMax>=max(scene.x-front,0.0)&&rayMin<=scene.y+back;
+
+        if(overlap&&mip>0){mip-=1;continue;}
+
+        if(overlap&&mip==0)
+        {
+            float sd=scene.x;
+            float slabNear=max(sd-front,0.0);
+            float slabFar=sd+back;
+            bool movingAway=d1>d0+1e-8;
+            bool movingToward=d1<d0-1e-8;
+            float entryDepth=movingAway?slabNear:slabFar;
+            bool startsBeforeEntry=movingAway?(d0<=entryDepth):(d0>=entryDepth);
+            bool reachesEntry=movingAway?(d1>=entryDepth):(d1<=entryDepth);
+            bool startsInside=d0>=slabNear-0.001&&d0<=slabFar+0.001;
+            bool candidateReady=false;
+            float candidateLambda=0.0;
+
+            if(!movingAway&&!movingToward)
+            {
+                // Reject: depth-parallel mip-0 segment.
+            }
+            else if(!startsBeforeEntry)
+            {
+                if(startsInside)
+                {
+                    // v0.52/v0.53 H2 grazing recovery. Keep unchanged.
+                    float currentDepth=SLH53SampleStaticDepthLinear(uv);
+                    float backtrackLambda=max(lambda-grazingBackLambda,0.0);
+                    float2 backtrackUV=SLH53RayUV(r,backtrackLambda);
+                    float previousDepth=SLH53SampleStaticDepthLinear(backtrackUV);
+                    float discontinuity=max(SLH53DiscontinuityTolerance,0.001);
+                    bool continuous=currentDepth>0.0&&previousDepth>0.0&&
+                                    abs(currentDepth-sd)<=discontinuity&&
+                                    abs(previousDepth-currentDepth)<=discontinuity;
+
+                    if(continuous)
+                    {
+                        float previousGap=SLH53RayDepth(r,backtrackLambda)-previousDepth;
+                        float entryGap=movingAway?-front:back;
+                        bool previousBefore=movingAway?(previousGap<=entryGap):(previousGap>=entryGap);
+                        float lo=backtrackLambda;
+                        float hi=lambda;
+                        bool refineValid=true;
+
+                        if(previousBefore&&hi>lo+1e-8)
+                        {
+                            [loop]
+                            for(int b=0;b<10;++b)
+                            {
+                                if(b>=SLH53RefineSteps)break;
+                                float mid=(lo+hi)*0.5;
+                                float2 midUV=SLH53RayUV(r,mid);
+                                float midSurface=SLH53SampleStaticDepthLinear(midUV);
+                                if(midSurface<=0.0||abs(midSurface-currentDepth)>discontinuity)
+                                {
+                                    refineValid=false;
+                                    break;
+                                }
+                                float gap=SLH53RayDepth(r,mid)-midSurface;
+                                if(movingAway)
+                                {
+                                    if(gap>=entryGap)hi=mid;else lo=mid;
+                                }
+                                else
+                                {
+                                    if(gap<=entryGap)hi=mid;else lo=mid;
+                                }
+                            }
+                            candidateLambda=(lo+hi)*0.5;
+                        }
+                        else
+                        {
+                            // Conservative continuation inside same locally continuous slab.
+                            candidateLambda=lambda;
+                        }
+
+                        if(refineValid)candidateReady=true;
+                    }
+                }
+                // Else already beyond slab: reject and continue.
+            }
+            else if(!reachesEntry)
+            {
+                // Reject and continue.
+            }
+            else
+            {
+                float lo=lambda,hi=exitLambda;
+                [loop]
+                for(int b=0;b<10;++b)
+                {
+                    if(b>=SLH53RefineSteps)break;
+                    float mid=(lo+hi)*0.5;
+                    float dm=SLH53RayDepth(r,mid);
+                    if(movingAway)
+                    {
+                        if(dm>=entryDepth)hi=mid;else lo=mid;
+                    }
+                    else
+                    {
+                        if(dm<=entryDepth)hi=mid;else lo=mid;
+                    }
+                }
+                candidateLambda=(lo+hi)*0.5;
+                candidateReady=true;
+            }
+
+            if(candidateReady)
+            {
+                float2 candidateUV=SLH53RayUV(r,candidateLambda);
+                float freshDepth=SLH53SampleStaticDepthLinear(candidateUV);
+                float candidateDepth=SLH53RayDepth(r,candidateLambda);
+
+                // v0.53 final authority: fresh full-resolution Dstatic.
+                // The mip-0 hierarchy guide depth sd is NOT a veto here.
+                bool freshInside=freshDepth>0.0&&
+                                 candidateDepth>=freshDepth-front-0.001&&
+                                 candidateDepth<=freshDepth+back;
+
+                if(freshInside)
+                {
+                    hitUV=candidateUV;
+                    hitDistance=SLH53RayDistance(r,candidateLambda)+max(SLH53InitialTravel,0.0);
+                    return true;
+                }
+            }
+        }
+
+        // Preserve v0.51 full ascent: startMip is initial level only.
+        lambda=min(exitLambda+epsLambda,1.0);
+        mip=min(mip+1,SLH53_TOP_MIP);
+    }
+
+    return false;
+}
+
+float3 SLH53SampleWorldColor(float2 hitUV)
+{
+    return tex2D(SLH53_STATIC_COLOR_SAMPLER,SLH53FirestormUV(hitUV)).rgb;
+}
+
+// Add these ten passes BEFORE the production CORE trace pass:
+//
+// pass SLH53BuildL0 { VertexShader=PostProcessVS; PixelShader=SLH53Level0PS; RenderTarget=SLH53L0Tex; }
+// pass SLH53BuildL1 { VertexShader=PostProcessVS; PixelShader=SLH53Level1PS; RenderTarget=SLH53L1Tex; }
+// pass SLH53BuildL2 { VertexShader=PostProcessVS; PixelShader=SLH53Level2PS; RenderTarget=SLH53L2Tex; }
+// pass SLH53BuildL3 { VertexShader=PostProcessVS; PixelShader=SLH53Level3PS; RenderTarget=SLH53L3Tex; }
+// pass SLH53BuildL4 { VertexShader=PostProcessVS; PixelShader=SLH53Level4PS; RenderTarget=SLH53L4Tex; }
+// pass SLH53BuildL5 { VertexShader=PostProcessVS; PixelShader=SLH53Level5PS; RenderTarget=SLH53L5Tex; }
+// pass SLH53BuildL6 { VertexShader=PostProcessVS; PixelShader=SLH53Level6PS; RenderTarget=SLH53L6Tex; }
+// pass SLH53BuildL7 { VertexShader=PostProcessVS; PixelShader=SLH53Level7PS; RenderTarget=SLH53L7Tex; }
+// pass SLH53BuildL8 { VertexShader=PostProcessVS; PixelShader=SLH53Level8PS; RenderTarget=SLH53L8Tex; }
+// pass SLH53BuildL9 { VertexShader=PostProcessVS; PixelShader=SLH53Level9PS; RenderTarget=SLH53L9Tex; }
