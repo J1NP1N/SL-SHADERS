@@ -1,0 +1,156 @@
+--- SL_SSR_CORE_SPATIAL_v0_2.fx
++++ SL_SSR_CORE_SPATIAL_v0_5.fx
+@@ -416,7 +416,8 @@
+         "Dual-trace selected layer\0"
+         "Resolve radius\0"
+         "Resolved SSR confidence/coverage\0"
+-        "Resolve rejection: avatar R / depth G / normal B\0";
++        "Resolve rejection: avatar R / depth G / normal B\0"
++        "Blocked background-entry crossing mask\0";
+ > = 0;
+ 
+ uniform float SSRDebugGain
+@@ -1030,7 +1031,8 @@
+     out float rejectReason,
+     out float noHitHistoryClass,
+     out float minAbsDepthDelta,
+-    out float crossingPathClass)
++    out float crossingPathClass,
++    out float backgroundEntryBlocked)
+ {
+     hitUV = 0.0;
+     hitDistance = 0.0;
+@@ -1038,6 +1040,7 @@
+     noHitHistoryClass = 0.0;
+     minAbsDepthDelta = 1e6;
+     crossingPathClass = 0.0;
++    backgroundEntryBlocked = 0.0;
+ 
+     // Diagnostic reject codes:
+     // 1 = reflected ray points toward/through camera
+@@ -1085,12 +1088,16 @@
+             break;
+         }
+ 
+-        // Keep clear/background as the negative side of a possible bracket. This
+-        // records transport history but does not itself relax hit acceptance.
++        // Clear/background is empty transport space, not a geometric negative
++        // bracket. v0.20 made background previousValid so the next positive
++        // geometry sample could form a synthetic crossing at a depth discontinuity.
++        // That recovery failed runtime and was meant to be removed; full-resolution
++        // tracing exposed it as broad false world hits. Keep the history bit for
++        // diagnostics, but invalidate the geometric bracket across background.
+         if (delta < -9e5)
+         {
+             sawBackgroundSample = true;
+-            previousValid = true;
++            previousValid = false;
+             previousWasBackground = true;
+             previousDelta = -1e6;
+             previousT = t;
+@@ -1103,6 +1110,9 @@
+             sawNegativeGeometry = true;
+         else
+             sawNonNegativeGeometry = true;
++
++        if (previousWasBackground && delta >= 0.0)
++            backgroundEntryBlocked = 1.0;
+ 
+         if (previousValid && !previousWasBackground && previousDelta >= 0.0 && delta < 0.0)
+             sawPosToNegTransition = true;
+@@ -1755,7 +1765,7 @@
+     // coverage remains directly inspectable.
+     const bool geometryDebug =
+         (SSRDisplayMode == 2 || SSRDisplayMode == 11 ||
+-         (SSRDisplayMode >= 22 && SSRDisplayMode <= 33));
++         (SSRDisplayMode >= 22 && SSRDisplayMode <= 33) || SSRDisplayMode == 37);
+ 
+     if (!(geometryDebug ? SSRTraceReady() : SSRReady()) ||
+         !InsideFirestormWorld(uv))
+@@ -1808,6 +1818,7 @@
+     float worldNoHitHistoryClass;
+     float worldMinAbsDepthDelta;
+     float worldCrossingPathClass;
++    float worldBackgroundEntryBlocked;
+ 
+     float2 avatarHitUV;
+     float avatarHitDistance;
+@@ -1816,18 +1827,21 @@
+     float avatarNoHitHistoryClass;
+     float avatarMinAbsDepthDelta;
+     float avatarCrossingPathClass;
++    float avatarBackgroundEntryBlocked;
+ 
+     bool worldAccepted = TraceSSR(
+         viewPos, normal, rayDir, false,
+         worldHitUV, worldHitDistance, worldConfidence,
+         worldRejectReason, worldNoHitHistoryClass,
+-        worldMinAbsDepthDelta, worldCrossingPathClass);
++        worldMinAbsDepthDelta, worldCrossingPathClass,
++        worldBackgroundEntryBlocked);
+ 
+     bool avatarAccepted = TraceSSR(
+         viewPos, normal, rayDir, true,
+         avatarHitUV, avatarHitDistance, avatarConfidence,
+         avatarRejectReason, avatarNoHitHistoryClass,
+-        avatarMinAbsDepthDelta, avatarCrossingPathClass);
++        avatarMinAbsDepthDelta, avatarCrossingPathClass,
++        avatarBackgroundEntryBlocked);
+ 
+     // The physically nearer accepted point along the same reflected ray wins.
+     bool useAvatarHit =
+@@ -1844,6 +1858,12 @@
+     float minAbsDepthDelta = useAvatarHit ? avatarMinAbsDepthDelta : worldMinAbsDepthDelta;
+     float crossingPathClass = useAvatarHit ? avatarCrossingPathClass : worldCrossingPathClass;
+ 
++    if (SSRDisplayMode == 37)
++    {
++        float blocked = worldBackgroundEntryBlocked > 0.5 ? 1.0 : 0.0;
++        return float4(blocked, blocked * 0.5, 0.0, 1.0);
++    }
++
+     if (SSRDisplayMode == 31)
+     {
+         float used = worldAccepted ? 1.0 : 0.0;
+@@ -1870,7 +1890,7 @@
+     if (SSRDisplayMode == 22)
+         return float4(TraceRejectReasonColor(rejectReason, traceAccepted), 1.0);
+ 
+-    if (SSRDisplayMode == 22)
++    if (SSRDisplayMode == 23)
+         return float4(NoHitHistoryColor(noHitHistoryClass, traceAccepted, rejectReason), 1.0);
+ 
+     if (SSRDisplayMode == 24)
+@@ -1930,6 +1950,11 @@
+ 
+     if (SSRDisplayMode == 34)
+     {
++        float3 receiverViewPos;
++        float3 receiverNormal;
++        if (!SSRResolveReceiverGeometry(uv, receiverViewPos, receiverNormal))
++            return float4(0.0, 0.0, 0.0, 1.0);
++
+         float radiusPx = SSRResolveRadiusPx(uv, traceMeta);
+         float radius01 = saturate(radiusPx / max(SSRResolveMaxBlurPx, 1e-3));
+         return float4(radius01.xxx, 1.0);
+@@ -1955,7 +1980,7 @@
+     if (SSRDisplayMode == 23 || SSRDisplayMode == 24 || SSRDisplayMode == 25)
+         return float4(saturate(rawSSR.rgb), 1.0);
+ 
+-    if (SSRDisplayMode == 30 || SSRDisplayMode == 31 || SSRDisplayMode == 32 || SSRDisplayMode == 33)
++    if (SSRDisplayMode == 30 || SSRDisplayMode == 31 || SSRDisplayMode == 32 || SSRDisplayMode == 33 || SSRDisplayMode == 37)
+         return float4(saturate(rawSSR.rgb), 1.0);
+ 
+     if (SSRDisplayMode == 3)
+@@ -2164,9 +2189,9 @@
+     return color;
+ }
+ 
+-technique SL_SSR_CORE_SPATIAL_v0_2
++technique SL_SSR_CORE_SPATIAL_v0_5
+ <
+-    ui_label = "CORE+SPATIAL — Full-Res Coverage v0.2";
++    ui_label = "CORE+SPATIAL — Full-Res Background-Bracket Fix v0.5";
+     ui_tooltip = "Full-file v0.49 superset: WORLD Dstatic/Cstatic + AVATAR [D0,DavatarBack], cleaned production marcher, full-resolution receiver coverage, and roughness-aware depth/normal SSR resolve. Enable this instead of ordinary v0.49.";
+ >
+ {
