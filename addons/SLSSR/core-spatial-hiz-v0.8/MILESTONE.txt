@@ -1,0 +1,3 @@
+CORE+SPATIAL — Hi-Z v0.53 WORLD A/B v0.8
+Firestorm/OpenGL full-resolution Trace viewport reset after Hi-Z L9.
+Expected FX SHA-256: 13f5b7ad3d43f1241f5bdd18495aa56b2da013875986649839d943f031b30bd9
