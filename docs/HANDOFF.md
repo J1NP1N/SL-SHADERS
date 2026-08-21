@@ -51,6 +51,19 @@ The current defect is different from the old ghost:
 
 A line previously observed in `Scene linear source (direct)` was verified to come from the active EEP/environment, not SSR.
 
+## Required ReShade technique naming
+
+All new experimental FX must make their role obvious in ReShade. Use these prefixes in `ui_label` / technique names:
+
+- `CORE — ...` for the v0.49-derived main SSR trace/composite.
+- `SPATIAL — ...` for roughness/AA resolve passes.
+- `TEMPORAL PRE — ...` for capture/history input before CORE.
+- `TEMPORAL POST — ...` for temporal resolve after CORE.
+- `HIZ DEBUG — ...` for standalone Hi-Z diagnostics.
+- `AVATAR RECEIVER — ...` for SSR applied ON avatar materials as receivers.
+
+Do not use ambiguous labels such as `v0.49 Backbone` without the subsystem role. Each worker must document exact ReShade technique order and which effects should be disabled during isolated runtime tests.
+
 ## Parallel workstreams
 
 ### A. Roughness-aware spatial resolve / AA
@@ -65,7 +78,13 @@ Preserve v0.49 hit logic. Add jitter/history, reprojection, disocclusion/depth/n
 
 Improve/replace only the non-DDA static-world marcher using `Dstatic`, with `Cstatic` as world-hit color. Preserve the avatar `[D0,DavatarBack]` branch. Add hierarchical traversal and precise refinement. Correctness before performance.
 
-Future work includes SSR on the avatar as a receiver, cleaner native material/G-buffer inputs, optional static-world thickness/backface support, and performance optimization after visual correctness.
+### D. Avatar as SSR receiver
+
+Restore SSR **on the avatar itself** as a receiver while preserving the v0.49 avatar-as-hit/source path. This means shiny avatar materials may reflect the static world; it does not mean changing the `[D0,DavatarBack]` volume used when the world reflects the avatar.
+
+The receiver branch should start from avatar pixels, use available avatar material/specular/roughness and normals, and trace primarily against `Dstatic + Cstatic`. Keep it independently switchable/diagnostic so regressions in world receivers or avatar-hit thickness are obvious. Do not reintroduce the old secondary-avatar ghost.
+
+Future work also includes cleaner native material/G-buffer inputs, optional static-world thickness/backface support, and performance optimization after visual correctness.
 
 ## Key runtime lineage
 
@@ -91,6 +110,7 @@ Full runtime record: `history/ssr/SSR_v0.35-v0.49_SESSION_RUNTIME.md`.
 6. Data ReShade cannot infer must be produced natively in Firestorm and published by the bridge.
 7. Experimental renderer changes require useful debug views.
 8. Change one subsystem at a time; v0.49 avatar thickness is immutable unless explicitly targeted.
+9. Every experimental technique label must identify its subsystem role using the naming contract above.
 
 ## Fresh-chat bootstrap
 
