@@ -471,8 +471,8 @@ float GTAOComputeVisibility(float2 screenUV)
 
     float2 nativeTexel = 1.0 / max(SLPrimaryDepthNativeSize, float2(1.0, 1.0));
     float visibilitySum = 0.0;
-    int activeSlices = max(GTAOSliceCount, 1);
-    int activeSteps = max(GTAOStepsPerSide, 1);
+    int activeSlices = min(max(GTAOSliceCount, 1), SL_GTAO_MAX_SLICES);
+    int activeSteps = min(max(GTAOStepsPerSide, 1), SL_GTAO_MAX_STEPS);
 
     [loop]
     for (int slice = 0; slice < SL_GTAO_MAX_SLICES; ++slice)
@@ -541,8 +541,9 @@ float GTAOComputeVisibility(float2 screenUV)
             if (step >= activeSteps)
                 break;
 
-            float u = (float(step) + 1.0) / (float(activeSteps) + 1.0);
-            // Quadratic distribution spends more samples in the near field.
+            float u = (float(step) + 1.0) / float(activeSteps);
+            // Quadratic distribution spends more samples in the near field and
+            // still places the final sample at the requested projected radius.
             float sampleRadiusPixels = max(1.0, radiusPixels * u * u);
 
             [unroll]
