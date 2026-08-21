@@ -13,12 +13,31 @@ The static-world ray tracer uses hierarchical tile-boundary traversal, not scree
 
 Accepted world-hit color is sampled only from `SL_COLOR_BACKGROUND` (`Cstatic`). No scene/backbuffer color is used as the world-hit source.
 
-## Runtime setup
+## ReShade technique label
+
+The standalone diagnostic checkbox is:
+
+`HIZ DEBUG — Dstatic Hi-Z Diagnostic v0.50`
+
+The internal technique identifier is `HIZ_DEBUG_SL_SSR_StaticHiZ_v0_50_Diagnostic`.
+
+## Isolated runtime setup and exact technique order
 
 1. Run `addons/SLSSR/static-hiz-v0.50/restore_v0.50_static_hiz.py` to reconstruct the exact FX source, then copy `SL_SSR_StaticHiZ_v0_50_Diagnostic.fx` into the active ReShade shader directory used by the v0.49 setup.
 2. Keep the existing v0.49 native bridge/add-on stack active so `SL_DEPTH_PRIMARY_NATIVE`, `SL_DEPTH_BACKGROUND`, `SL_COLOR_BACKGROUND`, projection matrices, and normals are published.
-3. Enable `SL SSR v0.50 - Dstatic Hi-Z Diagnostic` and place it after v0.49 in ReShade technique order so its debug display is not overwritten.
-4. Do not tune performance. Leave `Start Mip=6`, `Traversal Budget=192`, `Refine Steps=6` for the first pass.
+3. For the isolated Hi-Z test, the active ReShade techniques should be ordered exactly:
+   1. `CORE — ...` v0.49-derived SSR trace/composite, or the existing v0.49 backbone checkbox if it has not yet been relabeled.
+   2. `HIZ DEBUG — Dstatic Hi-Z Diagnostic v0.50` immediately after CORE so the diagnostic display is the final visible output.
+4. Turn **OFF** all other experimental SSR effects during this isolated test:
+   - every `TEMPORAL PRE — ...` technique;
+   - every `SPATIAL — ...` technique;
+   - every `TEMPORAL POST — ...` technique;
+   - every `AVATAR RECEIVER — ...` technique;
+   - any older/duplicate Hi-Z diagnostic or prototype;
+   - any other experimental SSR trace/resolve/composite not required for the v0.49 CORE baseline.
+5. Do not tune performance. Leave `Start Mip=6`, `Traversal Budget=192`, `Refine Steps=6` for the first pass.
+
+If a baseline comparison is needed, switch only the Hi-Z diagnostic display/checkbox as required; do not introduce temporal, spatial, avatar-receiver, or alternate trace experiments into the comparison.
 
 ## First diagnostic sequence
 

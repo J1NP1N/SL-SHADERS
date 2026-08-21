@@ -14,7 +14,7 @@ out = root / "SL_SSR_StaticHiZ_v0_50_Diagnostic.fx"
 out.write_bytes(raw)
 
 sha = hashlib.sha256(raw).hexdigest()
-expected = "b2849d0ea8b82e0a95c9b8f29723952f034ff7a1d104338c61db2d744554c242"
+expected = "420fcf3f5bc3c0cfad4cf85cf14e56a8a4a5c8cc82239fb86be7904714a7b6c4"
 print(out)
 print("SHA-256:", sha)
 if sha != expected:
