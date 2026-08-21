@@ -21,7 +21,7 @@ def rep(old, new):
 rep("// SL_SSR_StaticHiZ_v0_52_GrazingRefine_Diagnostic.fx",
     "// SL_SSR_StaticHiZ_v0_53_EdgeCoverage_Diagnostic.fx")
 rep('ui_tooltip = "Maximum allowed change between the mip-0 hierarchy sample and a fresh Dstatic sample at the refined UV.";',
-    'ui_tooltip = "Hierarchy-guide consistency only. Fresh full-resolution Dstatic slab membership is authoritative for final v0.53 edge acceptance."')
+    'ui_tooltip = "Hierarchy-guide consistency only. Fresh full-resolution Dstatic slab membership is authoritative for final v0.53 edge acceptance.";')
 rep('"Reject code 7 count — already beyond slab\\0"\n        "Accepted hit distance\\0";',
     '"Reject code 7 count — already beyond slab\\0"\n        "Residual edge failure class\\0"\n        "Fresh-depth edge rescue count\\0"\n        "Accepted hit distance\\0";')
 rep("texture SLStaticHiZRejectBTex { Width=BUFFER_WIDTH; Height=BUFFER_HEIGHT; Format=RGBA16F; };",
@@ -124,7 +124,7 @@ rep("technique HIZ_DEBUG_SL_SSR_StaticHiZ_v0_52_GrazingRefine_Diagnostic",
 rep('ui_label = "HIZ DEBUG — Dstatic Hi-Z Diagnostic v0.52 Grazing Refine";',
     'ui_label = "HIZ DEBUG — Dstatic Hi-Z Diagnostic v0.53 Edge Coverage";')
 rep('ui_tooltip = "H2 diagnostic: distinguishes fine-reject causes and recovers locally continuous mip-0 grazing candidates that begin already inside the Dstatic slab. Dstatic/Cstatic only, no pixel DDA, avatar thickness path untouched.";',
-    'ui_tooltip = "Preserves v0.52 H2 grazing recovery and targets only residual silhouette/discontinuity coverage. Dstatic/Cstatic only, no pixel DDA, avatar path untouched."')
+    'ui_tooltip = "Preserves v0.52 H2 grazing recovery and targets only residual silhouette/discontinuity coverage. Dstatic/Cstatic only, no pixel DDA, avatar path untouched.";')
 rep("        RenderTarget4=SLStaticHiZRejectBTex;\n    }",
     "        RenderTarget4=SLStaticHiZRejectBTex;\n"
     "        RenderTarget5=SLStaticHiZEdgeDiagTex;\n    }")
@@ -134,6 +134,6 @@ out.write_text(s, encoding="utf-8")
 sha = hashlib.sha256(out.read_bytes()).hexdigest()
 print(out)
 print("SHA-256:", sha)
-if sha != "d4e4e9f72fae5a02ad2a1c9b7b534587a67aa3a7be441e4d4e2968eee91544e4":
+if sha != "d1b7870345c9a418b9a54c018271f8307768d244c4a0490b30dba6840624e8a1":
     raise SystemExit("v0.53 checksum mismatch")
 print("PASS")

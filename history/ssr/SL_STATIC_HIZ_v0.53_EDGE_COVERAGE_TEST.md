@@ -11,6 +11,12 @@ The accepted-hit mask is materially more coherent than v0.51, rejected fine cand
 
 This milestone remains standalone. It does **not** integrate Hi-Z into CORE, does not sample or modify `SL_DEPTH_AVATAR_BACK`, preserves `Dstatic = SL_DEPTH_BACKGROUND` and `Cstatic = SL_COLOR_BACKGROUND`, and does not use screen-pixel DDA.
 
+## Compile-fix note
+
+The first distributed v0.53 FX from commit `c1d0ed845313ca7e9fcea97d323f4a2baa3b9217` had two missing semicolons in ReShade annotation assignments (the `Static Hi-Z Refine Discontinuity` tooltip and the technique tooltip). ReShade therefore reported the first syntax error at line 110 and parser-cascade errors at the technique passes / EOF.
+
+The follow-up compile-fix changes **only those two annotation terminators**. Traversal, mip-0 acceptance, H2 recovery, diagnostics, Dstatic/Cstatic semantics, and technique ordering are unchanged.
+
 ## Residual root cause targeted
 
 At mip 0, v0.52 still generated/refined a candidate using the hierarchy guide depth `sd`, then performed this hard post-refinement gate:
@@ -137,6 +143,6 @@ Do not broaden traversal based on this test; use the classifier to select the ne
 
 `SL_SSR_StaticHiZ_v0_53_EdgeCoverage_Diagnostic.fx`
 
-SHA-256: `d4e4e9f72fae5a02ad2a1c9b7b534587a67aa3a7be441e4d4e2968eee91544e4`
+SHA-256: `d1b7870345c9a418b9a54c018271f8307768d244c4a0490b30dba6840624e8a1`
 
 No Firestorm/ReShade runtime is available in the authoring environment. v0.53 is runtime-testable, not runtime-proven.
