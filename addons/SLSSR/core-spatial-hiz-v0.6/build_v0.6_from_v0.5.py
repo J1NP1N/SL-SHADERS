@@ -55,9 +55,9 @@ b = 'if (SSRDisplayMode == 30 || SSRDisplayMode == 31 || SSRDisplayMode == 32 ||
 assert a in s
 s = s.replace(a, b, 1)
 
-# Exact Cstatic helper for Hi-Z selected WORLD color; old WORLD color path remains unchanged.
+# Preserve the accepted CORE Cstatic sampling/color clamp for either WORLD tracer.
 a = '''    float3 hitColor =\n        useAvatarHit\n            ? max(GetSceneLinear(hitUV).rgb, 0.0)\n            : GetBackgroundColor(hitUV);\n'''
-b = '''    float3 selectedWorldColor =\n        useHiZWorld\n            ? SLH53SampleWorldColor(worldHitUV)\n            : GetBackgroundColor(worldHitUV);\n\n    float3 hitColor =\n        useAvatarHit\n            ? max(GetSceneLinear(hitUV).rgb, 0.0)\n            : selectedWorldColor;\n'''
+b = '''    // Preserve the accepted CORE Cstatic color path exactly for either WORLD tracer.\n    float3 hitColor =\n        useAvatarHit\n            ? max(GetSceneLinear(hitUV).rgb, 0.0)\n            : GetBackgroundColor(hitUV);\n'''
 assert a in s
 s = s.replace(a, b, 1)
 
@@ -76,7 +76,7 @@ s = s.replace(a, b, 1)
 out = ROOT / "SL_SSR_CORE_SPATIAL_HIZ_v0_6.fx"
 out.write_text(s)
 sha = hashlib.sha256(out.read_bytes()).hexdigest()
-expected = "87bc0292919aaf562b73a34edecd63e24d626c9c3cc4270fe9d3de02bda7710d"
+expected = "238b97a7bfa4b92f802117c0c0932afb310bd4967b819beddb1a2621df083a8b"
 print(out.name)
 print("SHA-256", sha)
 assert sha == expected, (sha, expected)
