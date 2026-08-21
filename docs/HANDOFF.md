@@ -1,143 +1,136 @@
 # CHAT HANDOFF — READ THIS FIRST
 
-Last updated: 2026-08-19
+Last updated: 2026-08-22
 
-This is the live project checkpoint. A replacement chat should resume from this file and should not reconstruct the project from old chat history unless a required artifact is actually missing.
+This is the live project checkpoint. Fresh chats should start from the branch HEAD of `agent/ssr-background-depth` and treat **SSR v0.49 AvatarThicknessTrace** as the current backbone unless the user explicitly asks to revisit an older experiment.
 
-## Current focus
+## Current backbone
 
-Opaque SSR plumbing and material response are proven. The long-chased visual defect has now been **reclassified**.
+Native Firestorm + ReShade SSR data path:
 
-It is **not** a missing avatar reflection and not a dark shadow. The avatar already reflects correctly where specular response exists. The actual defect is a **faint stretched ghost copy of the avatar behind the correct reflection**, visible in `Ray hit mask` as a gray / partial-confidence column trailing from the feet next to the solid correct reflection.
+- `D0 = SL_DEPTH_PRIMARY_NATIVE` — ordinary nearest visible camera depth.
+- `Dstatic = SL_DEPTH_BACKGROUND` — nearest non-rigged/static world depth from the same camera.
+- `Cstatic = SL_COLOR_BACKGROUND` — avatar-free/static scene color from the same camera.
+- `DavatarBack = SL_DEPTH_AVATAR_BACK` — back-facing/exit depth of rigged/avatar geometry.
 
-Current FX lineage: **SSR v0.34 GhostCull**.
+The native scene pair (`Dstatic + Cstatic`) is proven aligned and avatar-free. The avatar back-depth diagnostic is also proven: `Valid backface mask` produced a clean cyan avatar silhouette aligned with the avatar.
 
-Installed native bridge may remain **SLProbeLighting v1.6.11 / v0.15 PBRAlphaProbe** from the prior line; v0.31-v0.34 were FX-only experiments.
+Current SSR FX backbone: `SL_SSR_v0_49_AvatarThicknessTrace.fx` (archived in `addons/SLSSR/current-fx/v0.49-source/`; run the restore script there to reconstruct the exact `.fx`).
 
-There is **no next runtime build prepared yet** after v0.34. The next implementation decision should be based on ray length / grazing stretch, or move structurally to a native planar reflection path.
+Current bridge source: `addons/SLSSR/avatar-thickness-v0.3.6b/SLBackgroundSceneLink_v0_4.cpp`.
 
-## Corrected cause
+## The original target bug is structurally fixed
 
-The current ghost is a camera-space SSR grazing artifact.
+The long-running defect was a **secondary white/pale avatar-shaped ghost** on reflective floors/walls. It appeared inside the reflective receiver's reflection of another surface. The good skin-colored avatar reflection under/on the receiver was always supposed to remain.
 
-The reflection ray is derived from the camera/view-space surface point and normal, marched against the camera depth buffer, then samples on-screen scene color. Floor pixels behind/around the avatar can therefore launch long grazing reflected rays that accept the avatar far from where a true 3D reflection would place it. This produces the stretched secondary image and makes the artifact camera-dependent.
+The root problem was camera-space avatar silhouette ambiguity. A single front depth (`D0`) let reflected rays accept geometry after they had already passed behind the avatar's real volume.
 
-The good reflection under the feet is generally a shorter path. The ghost behind it is a longer grazing path.
+v0.49 fixes that structurally:
 
-**Confidence is not a reliable separator.** v0.34 proved that the correct reflection and ghost overlap enough in confidence that raising a confidence floor removes the ghost but also punches a hole in the real reflection.
+- WORLD trace: `Dstatic + Cstatic` only.
+- AVATAR trace: uses the real native interval `[D0, DavatarBack]`.
+- A reflected ray may count as avatar geometry only while it lies inside that front/back interval.
+- Samples behind `DavatarBack` are empty for the avatar trace.
 
-## v0.31-v0.34 runtime results
+Runtime result: the original secondary avatar ghost is essentially gone while the legitimate avatar reflection remains.
 
-### v0.31 DDATrace — FAIL for target
+Do **not** reintroduce the discarded stretch-threshold, confidence-gate, screen-flip, or foreground-substitution approaches.
 
-Added a perspective-correct screen-pixel DDA trace core behind `Use Screen-Pixel DDA`. It removes the oversized-skip path and slab-tests stepped screen pixels directly.
+## Current remaining visual issue
 
-Runtime: DDA accepts on the avatar but does not remove the ghost. Finer stride reduces reflection overall rather than correcting the artifact.
+The current visible defect is different from the old ghost:
 
-### v0.32 SeeThrough — FAIL / design mistake
+- ragged / stippled / aliased boundaries in the **static-world** SSR trace, especially at grazing angles, corners, and long reflective transitions;
+- `Static-world accepted-hit mask` already contains this ragged boundary;
+- `Avatar-only accepted-hit mask` looks clean;
+- therefore the new avatar thickness path should be left alone.
 
-`Trace Through Foreground` attempted unlimited foreground skipping and reflected the surface behind.
+The user does **not** want screen-pixel DDA. Keep `Use Screen-Pixel DDA = 0` unless the user explicitly asks to retest it.
 
-Runtime: no visible difference. The toggle only affected the oversized-skip branch, which the target rays do not reliably enter.
+A line previously seen in `Scene linear source (direct)` was verified to come from the active EEP/environment, not SSR. Do not chase that as an SSR regression.
 
-### v0.33 PlanarProto — concept only
+## Parallel workstreams now allowed
 
-Added a rough FX-only vertical screen-space mirror fill for missing SSR floor pixels.
+### A. Roughness-aware spatial resolve / AA
 
-It demonstrated the general planar-reflection idea but is not geometrically correct and is not the fix.
+Target only the SSR resolve/filter. Preserve v0.49 tracing and native thickness. Use depth/normal-aware bilateral weighting; widen blur with roughness while keeping true mirrors sharp. Do not Gaussian-blur the final frame indiscriminately.
 
-### v0.34 GhostCull — FAIL / informative
+### B. Temporal accumulation + reprojection
 
-Added `Min Reflection Confidence`.
+Preserve v0.49 hit logic. Add jitter/history, reprojection, disocclusion rejection, depth/normal validation, camera-cut handling, neighborhood clamping, and anti-trailing protection for avatar motion.
 
-Runtime: raising it can kill the gray ghost streak, but it also removes valid reflection under the avatar's feet. This proves confidence is the wrong discriminator.
+### C. Hi-Z static-world trace
 
-Exact session record: `history/ssr/SSR_v0.31-v0.34_SESSION_RUNTIME.md`.
+Replace/improve the current non-DDA static-world marcher using `Dstatic`; preserve `Cstatic` color resolve and the avatar `[D0,DavatarBack]` branch. Add hierarchical traversal and precise refinement. Correctness before performance.
 
-## Prior proven infrastructure that remains valid
+Future but not immediate:
 
-- Firestorm full-resolution main-pass `specularRect` acquisition is proven.
-- ReShade-owned material publication is proven.
-- Legacy `specularRect.rgb` can drive SSR even when alpha/glossiness is zero.
-- PBR and legacy material classification infrastructure exists.
-- Scene-linear reflection source is proven.
-- SSR geometry transport works and produces real scene-color hits.
-- `Disocclusion Skips = 3` solved a separate known issue and should not be casually removed without regression testing.
-- Ray-origin bias was previously incorrectly coupled to `Hit Thickness`; that was corrected.
+- SSR **on the avatar as a receiver** (world reflected on shiny avatar materials);
+- cleaner native material/G-buffer inputs;
+- static-world thickness/backface extension where useful;
+- performance optimization only after visual correctness.
 
-The v0.17-v0.30 recovery machinery was built while the target was being interpreted as a missing reflected-avatar region. The new diagnosis means those paths should **not** automatically be treated as the architecture for fixing the current ghost. They have also created substantial settings/debug sprawl.
+## v0.35-v0.49 lineage summary
 
-## Recommended next direction
+- v0.35 LegacyResolve — existing roughness/glossiness-aware resolve lineage.
+- v0.36 BackgroundLayer — introduced paired-depth/background experimentation.
+- v0.37 BackgroundVeto — continued background-layer gating.
+- v0.38 BackgroundScenePair — Dstatic hits resolve `Cstatic`; converted dark contamination into a bright background-colored lobe, proving color alone was not the root cause.
+- v0.39 StaticWorldTrace — clean static-only world trace; removed bad contamination but also removed valid avatar reflection.
+- v0.40 DualLayerAA — fake screen-space mirrored avatar source; wrong vertical/translucent smear. Dead end.
+- v0.41 ForegroundSubstitute — per-sample D0→Dstatic substitution. Wrong target. Dead end.
+- v0.42 StretchComposite — direct use of stretch scalar as final opacity was not the right abstraction.
+- v0.43 StretchSelection — stretch eligibility caused regressions and white lobes. Dead end.
+- v0.44 RawHitSupport — raw accepted-hit support clamp did not remove white lobes.
+- v0.45 BackgroundHitContinue — successfully removed accepted Dstatic/background-hit path while artifact survived, proving another accepted path caused it.
+- v0.46 PrimaryHoldRelease — short-travel primary foreground release mask stayed essentially black; not the culprit.
+- v0.47 DualTrace — independent world and avatar traces. Diagnostic isolated the bad tall band entirely to the avatar-only D0 trace.
+- v0.48 AvatarStretchGate — rejected too much valid avatar reflection. Discarded.
+- v0.49 AvatarThicknessTrace — uses native `[D0,DavatarBack]`; original secondary avatar ghost effectively solved. Current backbone.
 
-### Option A — next cheap diagnostic/fix
+## Native plumbing checkpoints
 
-Instrument and gate by **hit distance / grazing stretch**, not confidence.
+### v0.3.5 scene pair
 
-Goal: distinguish the short correct reflection from the long behind-avatar ghost. A useful next diagnostic should visualize accepted-hit distance or normalized screen/ray stretch directly before changing composite behavior.
+Firestorm exports simultaneously:
 
-If the ghost consistently occupies a separable long-ray band, test a conservative long-hit rejection/fade while checking that legitimate distant reflections are not removed.
+- `SL_GetSSRPrimaryDepthInfo` → D0
+- `SL_GetSSRBackgroundDepthInfo` → Dstatic
+- `SL_GetSSRBackgroundColorInfo` → Cstatic
 
-### Option B — structural fix
+The background/static pass excludes rigged/avatar geometry. `SL_BackgroundScenePair_v0_1c.fx` visually proved recognizable Dstatic geometry and continuous avatar-free Cstatic.
 
-Implement a **scene-based planar reflection** in the native add-on: reflect scene/avatar geometry across the receiving floor plane rather than relying on the camera depth buffer for that class of reflection.
+### v0.3.6b avatar back depth
 
-This removes the camera-space failure class instead of tuning around it.
+Adds:
 
-`SLProbeLighting.cpp` is **not currently present as a normal source file on GitHub `main`**. Earlier recovery artifacts may contain/reconstruct it, but it must be imported and verified before the native planar path should be treated as buildable from GitHub alone.
+- `SL_GetSSRAvatarBackDepthInfo` → DavatarBack
 
-## Current source/recovery state
+The bridge v0.4 copies/publishes it as `SL_DEPTH_AVATAR_BACK` in addition to the existing three resources.
 
-Uploaded bundle:
-
-`SL-SHADERS_ssr-v0.31-v0.34-session.bundle`
-
-- prerequisite: `47ba4ad3b9e884ab129f2558410f2c117ed06e2c`
-- bundle HEAD: `fc5d5c5ec5c78a16434ea441495301e811578d50`
-- SHA-256: `81e4578444077df9a6dbcc9f7e80c32a6f76500d2fb798bbc5f50ccfb2956d14`
-
-The bundle contains:
-
-- full v0.34 FX blob `08f9c78e0eeb50ec9c3f08c0e278afc9f841a78`
-- exact runtime record blob `17b574ec29edfef5913c0f0d6c4538abfbd7cd19`
-- v0.30 -> v0.34 patch blob `48321d06ec9868f59645557c0a09616f765c7dd5`
-
-See `history/ssr/SSR_v0.31-v0.34_BUNDLE_PROVENANCE.md` for import verification.
-
-Important: the uploaded bundle proves the full FX exists and is recoverable, but the GitHub connector in this chat does not expose a direct local-file-to-repository upload path. Do not claim the 69 KB full FX is a normal GitHub source file until the expected blob/path is independently verified on GitHub.
-
-## Glass checkpoint
-
-Known glass fixture remains parked while reflection transport is stabilized:
-
-- PBR, Alpha Mode Blend, base alpha 0.500
-- metallic factor 1.000, roughness factor 1.000
-- magenta ORM ≈ AO=1 / roughness=0 / metallic=1
-- Base color UUID `2fe6eb37-163d-7bea-7163-a2c5e805e8ac`
-- ORM UUID `ae33719a-14d1-d228-2ad1-70adddebe890`
-- Normal UUID `4ed76883-9057-3be5-c18e-1b878bf9dd88`
-
-v0.15 first-segment PBR-alpha probe was inconclusive/black. Do not mix glass debugging into the current ghost investigation.
+`SL_AvatarThicknessProof_v0_1.fx` with `Valid backface mask` produced the expected cyan avatar silhouette. This is a proven native input and should not be replaced with an FX heuristic.
 
 ## Runtime-development rules
 
-1. Every installable ZIP starts with `SL_`.
-2. FX-only package = hot install; Firestorm may remain open.
-3. Native add-on/build package = close Firestorm before install.
-4. Debug screens/readouts are mandatory for experimental renderer changes.
-5. Loop: build -> commit source/checkpoint -> user runs real Firestorm -> report screenshots/readouts/errors -> update handoff -> next revision.
-6. Semantic-bound alone is not proof of shader-visible payload.
-7. Every new FX version needs an unambiguous visible technique/version identifier.
-8. Never call a binary package remotely backed up until byte count/checksum is independently verified.
-9. When runtime evidence changes the diagnosis, update this handoff immediately rather than carrying the old framing forward.
+1. GOOD = skin-colored/normal avatar reflection on the reflective receiver. Preserve it.
+2. BAD = secondary white/pale avatar-shaped ghost/silhouette. v0.49 structurally addresses it.
+3. Do not call the good avatar reflection a bug.
+4. Do not describe the old bug as merely "avatar near a wall"; it appeared in the reflective receiver's reflection of a wall/surface.
+5. `Use Screen-Pixel DDA = 0` is the current user preference.
+6. Do not optimize FPS until the SSR is visually correct.
+7. FX-only changes should not trigger a Firestorm rebuild.
+8. Native data unavailable to ReShade must be produced in Firestorm, then published through the bridge.
+9. Debug views are required for experimental renderer changes.
+10. Change one subsystem at a time and preserve the v0.49 avatar-thickness branch unless that branch is the explicit target.
 
 ## Fresh-chat bootstrap
 
 Read in this order:
 
 1. `docs/HANDOFF.md`
-2. `history/ssr/SSR_v0.31-v0.34_SESSION_RUNTIME.md`
-3. `history/ssr/SSR_v0.31-v0.34_BUNDLE_PROVENANCE.md`
-4. `docs/SSR_TRACE_CORE_AUDIT_2026-08-19.md` only if changing the trace core
-5. `docs/UPSTREAM_RENDERER_NOTES.md` only if viewer-source details are needed
+2. `docs/BACKBONE_v0.49.md`
+3. restore/read v0.49 under `addons/SLSSR/current-fx/v0.49-source/`
+4. Native files under `addons/SLSSR/background-scene-pair-v0.3.5/` and `addons/SLSSR/avatar-thickness-v0.3.6b/` only if changing plumbing.
+5. `history/ssr/SSR_v0.35-v0.49_SESSION_RUNTIME.md` only if historical diagnosis is needed.
 
-Do not ask the user to retell the v0.31-v0.34 session unless these files are demonstrably missing the needed runtime observation.
+Do not ask the user to reconstruct the v0.35-v0.49 debugging sequence unless these files are demonstrably missing a needed observation.
