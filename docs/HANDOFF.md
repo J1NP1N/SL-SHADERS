@@ -19,6 +19,32 @@ Exact validated native source/tooling is archived at `addons/SLSSR/native-backbo
 
 The native archive restores the v0.3.5 Dstatic/Cstatic scene pair, bridge v0.3, v0.3.6b avatar-back patch, bridge v0.4, build scripts, and proof diagnostics.
 
+## GTAO native alpha milestone
+
+Branch: `agent/native-alpha-geometry`.
+
+The v0.1 native alpha producer/bridge has now been applied to the custom Firestorm v0.49.1 build and added to the active ReShade setup. Runtime reports the alpha inputs as valid. Treat the native producer -> ReShade semantic plumbing as **proven live**.
+
+Current published alpha semantics:
+
+- `SL_ALPHA_MATERIAL` — alpha/cutout geometry classification signal.
+- `SL_DEPTH_ALPHA_NATIVE` — private nearest alpha/cutout depth.
+- `SL_ALPHA_COVERAGE` — alpha coverage/opacity signal.
+
+Current native source/tooling lives at `addons/SLGTAO/native-alpha-v0.1/` and includes the fail-closed Firestorm patch, ReShade bridge, build script, proof FX, and semantic contract.
+
+Do **not** yet mark the following as proven until the raw proof views are inspected:
+
+- cloud/sky/particle/HUD exclusion at pixel level;
+- Dalpha silhouette/registration against the classified alpha geometry;
+- fractional blend coverage for hair/transparency;
+- cutout coverage fidelity for foliage/material masks;
+- nearest-fragment coherence between material, depth, and coverage.
+
+Next native-alpha gate: run the standalone native alpha proof with GTAO disabled and inspect `Material classification`, `Native alpha depth (raw)`, `Coverage`, and `Registration/status`. Only after those pass should GTAO behavior be used to diagnose the native alpha path.
+
+`SL_NORMAL_ALPHA_NATIVE` is not part of this first proven plumbing milestone; dedicated alpha-normal publication remains a later correctness extension if needed.
+
 ## Original ghost — fixed structurally
 
 GOOD = legitimate skin-colored/normal avatar reflection on the reflective receiver. Preserve it.
@@ -121,5 +147,7 @@ Read:
 3. restore/read `addons/SLSSR/current-fx/v0.49-source/`
 4. only if native plumbing is relevant, restore `addons/SLSSR/native-backbone-v0.49/`
 5. `history/ssr/SSR_v0.35-v0.49_SESSION_RUNTIME.md` only when historical diagnosis is needed.
+
+For GTAO/native-alpha work, additionally read `addons/SLGTAO/native-alpha-v0.1/NATIVE_ALPHA_CONTRACT.md` and its sibling README before changing the producer or bridge.
 
 Do not ask the user to retell the v0.35-v0.49 debugging sequence unless these files are demonstrably insufficient.
