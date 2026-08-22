@@ -60,13 +60,28 @@ System avatar opaque skin is intentionally **not** replayed here; v0.49.1 includ
 
 ## Build/install
 
+Validated Windows build tree:
+
+- Firestorm source: `C:\firestorm-slssr\phoenix-firestorm`
+- Build tree: `C:\firestorm-slssr\phoenix-firestorm\build-vc170-64`
+- Built binary: `C:\firestorm-slssr\phoenix-firestorm\build-vc170-64\newview\Release\firestorm-bin.exe`
+
+Validated custom SLSSR install target:
+
+- Install directory: `C:\Program Files\FirestormOS-SLSSRBGDepth`
+- Installed executable: `C:\Program Files\FirestormOS-SLSSRBGDepth\FirestormOS-SLSSRBGDepth.exe`
+- `C:\Program Files\Firestorm-Release64` is **not** the install target for this custom SLSSR viewer.
+
 1. Apply the Firestorm patch:
    `powershell -ExecutionPolicy Bypass -File .\Apply-SLNativeAlphaGeometry-v0.1.ps1 -FirestormRoot C:\firestorm-slssr\phoenix-firestorm`
-2. Rebuild `firestorm-bin` using the same build tree as the validated v0.49 viewer.
-3. Build the ReShade add-on from a VS developer prompt:
+2. Rebuild `firestorm-bin`:
+   `cmake --build "C:\firestorm-slssr\phoenix-firestorm\build-vc170-64" --config Release --target firestorm-bin`
+3. With Firestorm closed, install the built binary from an Administrator PowerShell:
+   `Copy-Item "C:\firestorm-slssr\phoenix-firestorm\build-vc170-64\newview\Release\firestorm-bin.exe" "C:\Program Files\FirestormOS-SLSSRBGDepth\FirestormOS-SLSSRBGDepth.exe" -Force`
+4. Build the ReShade add-on from a VS developer prompt:
    `build-msvc.bat <ReShadeRoot>`
-4. Install `build\SLNativeAlphaLink.addon` next to the existing project ReShade add-ons.
-5. Install `SL_NativeAlphaProof_v0_1.fx` into the active ReShade shader directory.
+5. Install `build\SLNativeAlphaLink.addon` next to the existing project ReShade add-ons.
+6. Install `SL_NativeAlphaProof_v0_1.fx` into the active ReShade shader directory.
 
 ## First runtime proof
 
