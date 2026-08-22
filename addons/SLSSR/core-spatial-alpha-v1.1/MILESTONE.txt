@@ -1,0 +1,5 @@
+CORE+SPATIAL — Native Alpha Diagnostics v1.1
+Diagnostics-only binding/association/ray-blocker milestone for SL_ALPHA_MATERIAL, SL_DEPTH_ALPHA_NATIVE and SL_ALPHA_COVERAGE.
+Production Display Mode 0 remains the existing CORE+SPATIAL behavior.
+Base branch head: 7067519e973d464818ba54c3128108ab4cbba67f
+Expected FX SHA-256: b26229c5041affbe2c39ae90c7437ee9f20e5fe1026a1f5c3860f8e312bdcee5
