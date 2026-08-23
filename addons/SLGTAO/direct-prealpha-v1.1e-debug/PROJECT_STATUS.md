@@ -26,7 +26,9 @@ Interpretation:
 - N dot V coherent but baseline black => slice basis / arc-integral failure.
 - Baseline coherent but raw AO black => horizon sampling/update is collapsing visibility.
 
-## Artifact
-`packages/SLGTAO/SLAlphaGTAOHook_direct_merge_v1_1e_debug.zip`
+## Source record
+Exact v1.1d -> v1.1e deltas are committed under:
+`addons/SLGTAO/direct-prealpha-v1.1e-debug/source-delta/`
 
-SHA-256: `0fffbfb4466d8340821302dc3f7ee8b3705ce84de9c212244ba480fbefc96403`
+The full handoff source ZIP generated for build/test has SHA-256:
+`0fffbfb4466d8340821302dc3f7ee8b3705ce84de9c212244ba480fbefc96403`
