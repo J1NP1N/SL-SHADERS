@@ -101,14 +101,17 @@ Validated runtime state:
 - Raw and denoised AO are populated but currently overwhelmingly dark.
 - Firestorm normal encoding/decoding matches the direct GTAO stereographic XY decode; do not replace the decode speculatively.
 
-Current diagnostic build: v1.1e. It adds:
+Current diagnostic build: v1.1f. It preserves the v1.1e basis diagnostics:
 
 - `SL_GTAO_NV` — decoded-normal facing term `saturate(dot(N,V))`.
 - `SL_GTAO_BASELINE` — unoccluded slice/basis visibility with horizon sampling removed.
 
-Use those two views to isolate whether the collapse occurs in normal/view basis, slice integration, or horizon updates before any radius/strength/denoise tuning.
+v1.1f adds `Passthrough (generate/export GTAO only)` in the add-on overlay. With passthrough enabled, the direct GTAO generation/export path continues to run, but the opaque Firestorm scene copy is written back unchanged. Use passthrough while enabling `SL_DirectGTAO_Debug.fx`; this prevents the add-on composite from changing the scene underneath the FX diagnostics.
 
-Exact status: `addons/SLGTAO/direct-prealpha-v1.1e-debug/PROJECT_STATUS.md`.
+Use `N dot V` and `Unoccluded slice baseline` to isolate whether the current visibility collapse occurs in normal/view basis, slice integration, or horizon updates before any radius/strength/denoise tuning.
+
+Exact status: `addons/SLGTAO/direct-prealpha-v1.1f-passthrough/PROJECT_STATUS.md`.
+Exact source delta: `addons/SLGTAO/direct-prealpha-v1.1f-passthrough/source-delta/v1.1e-to-v1.1f.patch`.
 
 ## Installable package handoff contract
 
@@ -118,7 +121,8 @@ Exact status: `addons/SLGTAO/direct-prealpha-v1.1e-debug/PROJECT_STATUS.md`.
 - Every installable ZIP must begin with `SL_` because the installer discovers `SL_*.zip` in Downloads.
 - Do not ask the user to rename packages to make the installer work; package naming is the coordinator's responsibility.
 - Packages containing `build-msvc.bat` or an `.addon` require Firestorm closed; FX-only packages may be hot-installed.
-- The current GTAO quick-install artifact is `packages/latest/SL_GTAO_Direct_v1_1e_Debug.zip`.
+- The current GTAO quick-install artifact is `SL_GTAO_Direct_v1_1f_Passthrough.zip`.
+- Current artifact SHA-256: `312ed80374bf1803236c6d32de54534d80aa570fefbcc4f4df35dc540d22aca7`.
 
 ## Key runtime lineage
 
@@ -158,6 +162,6 @@ Read:
 5. only if native plumbing is relevant, restore `addons/SLSSR/native-backbone-v0.49/`
 6. `history/ssr/SSR_v0.35-v0.49_SESSION_RUNTIME.md` only when historical diagnosis is needed.
 
-For GTAO work, also read `addons/SLGTAO/direct-prealpha-v1.1e-debug/PROJECT_STATUS.md` and continue from `agent/direct-gtao-integration`.
+For GTAO work, also read `addons/SLGTAO/direct-prealpha-v1.1f-passthrough/PROJECT_STATUS.md` and continue from `agent/direct-gtao-integration`.
 
 Do not ask the user to retell the v0.35-v0.49 debugging sequence unless these files are demonstrably insufficient.
