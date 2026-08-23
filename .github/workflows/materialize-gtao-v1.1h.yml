@@ -1,0 +1,39 @@
+name: Materialize GTAO v1.1h source
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  materialize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/direct-gtao-integration
+          fetch-depth: 0
+
+      - name: Verify and extract v1.1g source package
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'd98daa854a19f962d63eef4b16107be75fed4784f0da63b91da965b0fe773152  packages/latest/SL_GTAO_Direct_v1_1g_CleanPassthrough.zip' | sha256sum -c -
+          rm -rf /tmp/gtao-v11g /tmp/v1.1g-source
+          mkdir -p /tmp/gtao-v11g
+          unzip -q packages/latest/SL_GTAO_Direct_v1_1g_CleanPassthrough.zip -d /tmp/gtao-v11g
+          source_root="$(find /tmp/gtao-v11g -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+          test -n "$source_root"
+          cp -a "$source_root" /tmp/v1.1g-source
+          rm -rf /tmp/v1.1g-source/repo_delta
+          test -f /tmp/v1.1g-source/SLAlphaGTAOHook.cpp
+          test -f /tmp/v1.1g-source/SLDirectGTAO.cpp
+          test -f /tmp/v1.1g-source/SLDirectGTAOShaders.hpp
+          test -f /tmp/v1.1g-source/SL_DirectGTAO_Debug.fx
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gtao-v1.1g-source
+          path: /tmp/v1.1g-source
+          if-no-files-found: error

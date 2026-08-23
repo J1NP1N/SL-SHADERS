@@ -1,0 +1,16 @@
+--- SLAlphaGTAOHook_direct_merge_v1_1d_debug/SLDirectGTAO.hpp	2026-08-23 00:27:52.000000000 +0000
++++ SLAlphaGTAOHook_direct_merge_v1_1e_debug/SLDirectGTAO.hpp	2026-08-23 00:45:25.426384042 +0000
+@@ -53,10 +53,13 @@
+         api::resource_view n0 = { 0 };
+         api::resource_view raw_ao = { 0 };
+         api::resource_view denoised_ao = { 0 };
++        api::resource_view normal_facing = { 0 };
++        api::resource_view unoccluded_baseline = { 0 };
+         uint32_t width = 0;
+         uint32_t height = 0;
+         bool inputs_valid = false;
+         bool ao_valid = false;
++        bool basis_debug_valid = false;
+     };
+ 
+     struct frame_inputs

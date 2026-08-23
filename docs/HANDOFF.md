@@ -1,143 +1,169 @@
 # CHAT HANDOFF — READ THIS FIRST
 
-Last updated: 2026-08-19
+Last updated: 2026-08-23
 
-This is the live project checkpoint. A replacement chat should resume from this file and should not reconstruct the project from old chat history unless a required artifact is actually missing.
+Fresh chats should start from branch `agent/ssr-background-depth` and treat **SSR v0.49 AvatarThicknessTrace** as the integration backbone.
 
-## Current focus
+## Backbone
 
-Opaque SSR plumbing and material response are proven. The long-chased visual defect has now been **reclassified**.
+Native Firestorm + ReShade semantics:
 
-It is **not** a missing avatar reflection and not a dark shadow. The avatar already reflects correctly where specular response exists. The actual defect is a **faint stretched ghost copy of the avatar behind the correct reflection**, visible in `Ray hit mask` as a gray / partial-confidence column trailing from the feet next to the solid correct reflection.
+- `D0 = SL_DEPTH_PRIMARY_NATIVE` — nearest visible camera depth.
+- `Dstatic = SL_DEPTH_BACKGROUND` — avatar-free/static world depth from the same camera.
+- `Cstatic = SL_COLOR_BACKGROUND` — avatar-free/static world color from the same camera.
+- `DavatarBack = SL_DEPTH_AVATAR_BACK` — avatar/rigged back-facing exit depth.
 
-Current FX lineage: **SSR v0.34 GhostCull**.
+Exact v0.49 FX source is archived at `addons/SLSSR/current-fx/v0.49-source/`. Run `restore_v0.49.py`; expected SHA-256 is `354dd1deafedaabf25e7345632ce95c7b3f0627f5b1722ba6d8ce5e2037a6a7c`.
 
-Installed native bridge may remain **SLProbeLighting v1.6.11 / v0.15 PBRAlphaProbe** from the prior line; v0.31-v0.34 were FX-only experiments.
+Exact validated native source/tooling is archived at `addons/SLSSR/native-backbone-v0.49/`. Run `restore_native_backbone.py`; expected archive SHA-256 is `2a7cf9fe266bb165b85c63ffe7b2520c563ef0ec223a0b93594ad59463ad4c52`.
 
-There is **no next runtime build prepared yet** after v0.34. The next implementation decision should be based on ray length / grazing stretch, or move structurally to a native planar reflection path.
+The native archive restores the v0.3.5 Dstatic/Cstatic scene pair, bridge v0.3, v0.3.6b avatar-back patch, bridge v0.4, build scripts, and proof diagnostics.
 
-## Corrected cause
+## Original ghost — fixed structurally
 
-The current ghost is a camera-space SSR grazing artifact.
+GOOD = legitimate skin-colored/normal avatar reflection on the reflective receiver. Preserve it.
 
-The reflection ray is derived from the camera/view-space surface point and normal, marched against the camera depth buffer, then samples on-screen scene color. Floor pixels behind/around the avatar can therefore launch long grazing reflected rays that accept the avatar far from where a true 3D reflection would place it. This produces the stretched secondary image and makes the artifact camera-dependent.
+BAD = secondary white/pale avatar-shaped ghost/silhouette on reflective floors/walls. It appeared in the reflective receiver's reflection of another surface; it was not merely caused by avatar proximity to a wall.
 
-The good reflection under the feet is generally a shorter path. The ghost behind it is a longer grazing path.
+Root cause: a front-depth-only avatar trace could accept a reflected ray after it had already passed behind the avatar's real volume.
 
-**Confidence is not a reliable separator.** v0.34 proved that the correct reflection and ghost overlap enough in confidence that raising a confidence floor removes the ghost but also punches a hole in the real reflection.
+v0.49 architecture:
 
-## v0.31-v0.34 runtime results
+- WORLD trace: `Dstatic + Cstatic` only.
+- AVATAR trace: real native interval `[D0, DavatarBack]`.
+- Avatar geometry is valid only while the reflected ray lies inside that interval.
+- Samples behind `DavatarBack` are empty for the avatar branch.
 
-### v0.31 DDATrace — FAIL for target
+Runtime result: the original secondary avatar ghost is essentially gone while the good avatar reflection remains.
 
-Added a perspective-correct screen-pixel DDA trace core behind `Use Screen-Pixel DDA`. It removes the oversized-skip path and slab-tests stepped screen pixels directly.
+Do not revive confidence-only culling, accepted-stretch thresholds, screen-flipped avatar reflection, D0/Dstatic substitution, or other pre-v0.49 silhouette heuristics.
 
-Runtime: DDA accepts on the avatar but does not remove the ghost. Finer stride reduces reflection overall rather than correcting the artifact.
+## Current remaining visual issue
 
-### v0.32 SeeThrough — FAIL / design mistake
+The current defect is different from the old ghost:
 
-`Trace Through Foreground` attempted unlimited foreground skipping and reflected the surface behind.
+- ragged/stippled/aliased **static-world** SSR boundaries at grazing angles, corners, and long transitions;
+- `Static-world accepted-hit mask` already contains the ragged boundary;
+- `Avatar-only accepted-hit mask` looks clean;
+- therefore leave the v0.49 avatar-thickness branch alone.
 
-Runtime: no visible difference. The toggle only affected the oversized-skip branch, which the target rays do not reliably enter.
+`Use Screen-Pixel DDA = 0` is the current user preference. Do not re-enable DDA unless explicitly requested.
 
-### v0.33 PlanarProto — concept only
+A line previously observed in `Scene linear source (direct)` was verified to come from the active EEP/environment, not SSR.
 
-Added a rough FX-only vertical screen-space mirror fill for missing SSR floor pixels.
+## Required ReShade technique naming
 
-It demonstrated the general planar-reflection idea but is not geometrically correct and is not the fix.
+All new experimental FX must make their role obvious in ReShade. Use these prefixes in `ui_label` / technique names:
 
-### v0.34 GhostCull — FAIL / informative
+- `CORE — ...` for the v0.49-derived main SSR trace/composite.
+- `SPATIAL — ...` for roughness/AA resolve passes.
+- `TEMPORAL PRE — ...` for capture/history input before CORE.
+- `TEMPORAL POST — ...` for temporal resolve after CORE.
+- `HIZ DEBUG — ...` for standalone Hi-Z diagnostics.
+- `AVATAR RECEIVER — ...` for SSR applied ON avatar materials as receivers.
 
-Added `Min Reflection Confidence`.
+Do not use ambiguous labels such as `v0.49 Backbone` without the subsystem role. Each worker must document exact ReShade technique order and which effects should be disabled during isolated runtime tests.
 
-Runtime: raising it can kill the gray ghost streak, but it also removes valid reflection under the avatar's feet. This proves confidence is the wrong discriminator.
+## Parallel workstreams
 
-Exact session record: `history/ssr/SSR_v0.31-v0.34_SESSION_RUNTIME.md`.
+### A. Roughness-aware spatial resolve / AA
 
-## Prior proven infrastructure that remains valid
+Modify the resolve/filter only. Preserve v0.49 tracing/native thickness. Use depth/normal-aware bilateral filtering; roughness widens the footprint while mirror-like surfaces remain sharp. Do not globally blur the final frame.
 
-- Firestorm full-resolution main-pass `specularRect` acquisition is proven.
-- ReShade-owned material publication is proven.
-- Legacy `specularRect.rgb` can drive SSR even when alpha/glossiness is zero.
-- PBR and legacy material classification infrastructure exists.
-- Scene-linear reflection source is proven.
-- SSR geometry transport works and produces real scene-color hits.
-- `Disocclusion Skips = 3` solved a separate known issue and should not be casually removed without regression testing.
-- Ray-origin bias was previously incorrectly coupled to `Hit Thickness`; that was corrected.
+### B. Temporal accumulation + reprojection
 
-The v0.17-v0.30 recovery machinery was built while the target was being interpreted as a missing reflected-avatar region. The new diagnosis means those paths should **not** automatically be treated as the architecture for fixing the current ghost. They have also created substantial settings/debug sprawl.
+Preserve v0.49 hit logic. Add jitter/history, reprojection, disocclusion/depth/normal validation, camera-cut reset, neighborhood radiance clamping, and avatar-motion anti-trailing diagnostics.
 
-## Recommended next direction
+### C. Hi-Z static-world trace
 
-### Option A — next cheap diagnostic/fix
+Improve/replace only the non-DDA static-world marcher using `Dstatic`, with `Cstatic` as world-hit color. Preserve the avatar `[D0,DavatarBack]` branch. Add hierarchical traversal and precise refinement. Correctness before performance.
 
-Instrument and gate by **hit distance / grazing stretch**, not confidence.
+### D. Avatar as SSR receiver
 
-Goal: distinguish the short correct reflection from the long behind-avatar ghost. A useful next diagnostic should visualize accepted-hit distance or normalized screen/ray stretch directly before changing composite behavior.
+Restore SSR **on the avatar itself** as a receiver while preserving the v0.49 avatar-as-hit/source path. This means shiny avatar materials may reflect the static world; it does not mean changing the `[D0,DavatarBack]` volume used when the world reflects the avatar.
 
-If the ghost consistently occupies a separable long-ray band, test a conservative long-hit rejection/fade while checking that legitimate distant reflections are not removed.
+The receiver branch should start from avatar pixels, use available avatar material/specular/roughness and normals, and trace primarily against `Dstatic + Cstatic`. Keep it independently switchable/diagnostic so regressions in world receivers or avatar-hit thickness are obvious. Do not reintroduce the old secondary-avatar ghost.
 
-### Option B — structural fix
+Future work also includes cleaner native material/G-buffer inputs, optional static-world thickness/backface support, and performance optimization after visual correctness.
 
-Implement a **scene-based planar reflection** in the native add-on: reflect scene/avatar geometry across the receiving floor plane rather than relying on the camera depth buffer for that class of reflection.
+## Independent GTAO workstream
 
-This removes the camera-space failure class instead of tuning around it.
+GTAO is independent of SSR. Do not modify CORE/Hi-Z/Spatial/Avatar SSR while working this stream.
 
-`SLProbeLighting.cpp` is **not currently present as a normal source file on GitHub `main`**. Earlier recovery artifacts may contain/reconstruct it, but it must be imported and verified before the native planar path should be treated as buildable from GitHub alone.
+Current coordinator branch: `agent/direct-gtao-integration`.
 
-## Current source/recovery state
+Validated runtime state from prior builds:
 
-Uploaded bundle:
+- Firestorm straight-alpha boundary detection is stable without nested ReShade technique execution.
+- Direct GPU GTAO reaches the pre-alpha boundary and has successfully applied once per frame in prior runtime tests.
+- `SL_GTAO_D0`, `SL_GTAO_N0`, `SL_GTAO_RAW`, and `SL_GTAO_DENOISED` were proven bound for diagnostics.
+- D0 is spatially coherent and is not the cause of the current AO failure.
+- Raw and denoised AO are populated but currently overwhelmingly dark.
+- Firestorm normal encoding/decoding matches the direct GTAO stereographic XY decode; do not replace the decode speculatively.
 
-`SL-SHADERS_ssr-v0.31-v0.34-session.bundle`
+Current corrective build: **v1.2.0 Firestorm operating modes**.
 
-- prerequisite: `47ba4ad3b9e884ab129f2558410f2c117ed06e2c`
-- bundle HEAD: `fc5d5c5ec5c78a16434ea441495301e811578d50`
-- SHA-256: `81e4578444077df9a6dbcc9f7e80c32a6f76500d2fb798bbc5f50ccfb2956d14`
+- `Firestorm Baseline` is the default and must execute zero GTAO fullscreen work, zero scene-color copies/writes, and zero alpha replay.
+- `GTAO Diagnostics / Generate Only` may generate/export requested private GTAO resources but must never copy or write Firestorm scene color.
+- `GTAO Active` is the only mode allowed to copy/composite Firestorm scene color.
+- `SL_DirectGTAO_Debug.fx` defaults to debug view 0 (native backbuffer) and Baseline forces native backbuffer display even if a diagnostic view was previously saved.
+- N dot V and unoccluded-baseline passes are diagnostics-only and do not run in GTAO Active.
+- Pipeline restoration tracks effective canonical stages deterministically; MRT state is stored without four-target truncation; alpha replay restores captured Firestorm alpha blend factors/depth-write state; stale Firestorm resources/views/pipelines are invalidated through ReShade destruction events; settings changes are synchronized.
+- Authoritative shader source is `shaders/*.glsl`; the embedded header is generated/verified at build time.
 
-The bundle contains:
+Exact status: `addons/SLGTAO/direct-prealpha-v1.2.0-firestorm-modes/PROJECT_STATUS.md`.
+Reviewer-response report: `addons/SLGTAO/direct-prealpha-v1.2.0-firestorm-modes/ENGINEERING_REVIEW_v1.2.0.md`.
 
-- full v0.34 FX blob `08f9c78e0eeb50ec9c3f08c0e278afc9f841a78`
-- exact runtime record blob `17b574ec29edfef5913c0f0d6c4538abfbd7cd19`
-- v0.30 -> v0.34 patch blob `48321d06ec9868f59645557c0a09616f765c7dd5`
+## Installable package handoff contract
 
-See `history/ssr/SSR_v0.31-v0.34_BUNDLE_PROVENANCE.md` for import verification.
+`tools/installer/SL_InstallLatest.ps1` is the quick-install workflow. Follow `packages/README.md` exactly when producing handoff artifacts.
 
-Important: the uploaded bundle proves the full FX exists and is recoverable, but the GitHub connector in this chat does not expose a direct local-file-to-repository upload path. Do not claim the 69 KB full FX is a normal GitHub source file until the expected blob/path is independently verified on GitHub.
+- Canonical installable packages go under `packages/latest/`.
+- Every installable ZIP must begin with `SL_` because the installer discovers `SL_*.zip` in Downloads.
+- Do not ask the user to rename packages to make the installer work; package naming is the coordinator's responsibility.
+- Packages containing `build-msvc.bat` or an `.addon` require Firestorm closed; FX-only packages may be hot-installed.
+- Current GTAO quick-install artifact: `packages/latest/SL_GTAO_Direct_v1_2_0_FirestormModes.zip`.
+- Current GTAO artifact SHA-256: `c1574fae096f696276c077e55abef49e641202386e8e3bc3ae7545e77e287d47`.
 
-## Glass checkpoint
+## Key runtime lineage
 
-Known glass fixture remains parked while reflection transport is stabilized:
+- v0.38: Dstatic hits resolving Cstatic changed dark contamination into a bright background-colored lobe; Cstatic color was not the root cause.
+- v0.39: static-world-only trace removed contamination but also removed valid avatar reflection.
+- v0.40-v0.44: fake screen flip, foreground substitution, stretch gates/composites, and raw-hit support were dead ends.
+- v0.45: Dstatic/background accepted-hit path could be removed while artifact survived; culprit was another trace path.
+- v0.46: tested short-travel primary-foreground hold branch was not the culprit.
+- v0.47: dual trace isolated the entire bad tall band to the avatar-only D0 trace.
+- v0.48: stretch threshold also removed valid avatar reflection; discarded.
+- native v0.3.6b: `Valid backface mask` showed a clean cyan avatar silhouette aligned with avatar. PASS.
+- v0.49: `[D0,DavatarBack]` avatar-volume trace structurally fixes the original ghost. Current backbone.
 
-- PBR, Alpha Mode Blend, base alpha 0.500
-- metallic factor 1.000, roughness factor 1.000
-- magenta ORM ≈ AO=1 / roughness=0 / metallic=1
-- Base color UUID `2fe6eb37-163d-7bea-7163-a2c5e805e8ac`
-- ORM UUID `ae33719a-14d1-d228-2ad1-70adddebe890`
-- Normal UUID `4ed76883-9057-3be5-c18e-1b878bf9dd88`
+Full runtime record: `history/ssr/SSR_v0.35-v0.49_SESSION_RUNTIME.md`.
 
-v0.15 first-segment PBR-alpha probe was inconclusive/black. Do not mix glass debugging into the current ghost investigation.
+## Rules
 
-## Runtime-development rules
-
-1. Every installable ZIP starts with `SL_`.
-2. FX-only package = hot install; Firestorm may remain open.
-3. Native add-on/build package = close Firestorm before install.
-4. Debug screens/readouts are mandatory for experimental renderer changes.
-5. Loop: build -> commit source/checkpoint -> user runs real Firestorm -> report screenshots/readouts/errors -> update handoff -> next revision.
-6. Semantic-bound alone is not proof of shader-visible payload.
-7. Every new FX version needs an unambiguous visible technique/version identifier.
-8. Never call a binary package remotely backed up until byte count/checksum is independently verified.
-9. When runtime evidence changes the diagnosis, update this handoff immediately rather than carrying the old framing forward.
+1. Preserve GOOD avatar reflection.
+2. Do not conflate the old avatar ghost with current static-world aliasing.
+3. Keep DDA off by default.
+4. Do not optimize FPS yet.
+5. FX-only changes do not require a Firestorm rebuild.
+6. Data ReShade cannot infer must be produced natively in Firestorm and published by the bridge.
+7. Experimental renderer changes require useful debug views.
+8. Change one subsystem at a time; v0.49 avatar thickness is immutable unless explicitly targeted.
+9. Every experimental technique label must identify its subsystem role using the naming contract above.
+10. Installable ZIP handoffs must follow `packages/README.md` and remain compatible with `tools/installer/SL_InstallLatest.ps1`.
+11. GTAO Baseline and Diagnostics invariants are behavioral contracts: do not implement them with visually-similar copyback/composite work.
 
 ## Fresh-chat bootstrap
 
-Read in this order:
+Read:
 
 1. `docs/HANDOFF.md`
-2. `history/ssr/SSR_v0.31-v0.34_SESSION_RUNTIME.md`
-3. `history/ssr/SSR_v0.31-v0.34_BUNDLE_PROVENANCE.md`
-4. `docs/SSR_TRACE_CORE_AUDIT_2026-08-19.md` only if changing the trace core
-5. `docs/UPSTREAM_RENDERER_NOTES.md` only if viewer-source details are needed
+2. `docs/BACKBONE_v0.49.md`
+3. `packages/README.md` before producing any installable artifact
+4. restore/read `addons/SLSSR/current-fx/v0.49-source/`
+5. only if native plumbing is relevant, restore `addons/SLSSR/native-backbone-v0.49/`
+6. `history/ssr/SSR_v0.35-v0.49_SESSION_RUNTIME.md` only when historical diagnosis is needed.
 
-Do not ask the user to retell the v0.31-v0.34 session unless these files are demonstrably missing the needed runtime observation.
+For GTAO work, continue from `agent/direct-gtao-integration`, use `packages/latest/SL_GTAO_Direct_v1_2_0_FirestormModes.zip`, and treat its `PROJECT_STATUS.md` plus `ENGINEERING_REVIEW_v1.2.0.md` as the current acceptance record.
+
+Do not ask the user to retell the v0.35-v0.49 debugging sequence unless these files are demonstrably insufficient.

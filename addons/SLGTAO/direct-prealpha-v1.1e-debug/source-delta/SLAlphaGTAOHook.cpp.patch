@@ -1,0 +1,47 @@
+--- SLAlphaGTAOHook_direct_merge_v1_1d_debug/SLAlphaGTAOHook.cpp	2026-08-23 00:28:10.000000000 +0000
++++ SLAlphaGTAOHook_direct_merge_v1_1e_debug/SLAlphaGTAOHook.cpp	2026-08-23 00:46:27.949195791 +0000
+@@ -216,6 +216,8 @@
+         bool gtao_n0_bound = false;
+         bool gtao_raw_bound = false;
+         bool gtao_denoised_bound = false;
++        bool gtao_normal_facing_bound = false;
++        bool gtao_baseline_bound = false;
+     };
+@@ -302,11 +304,15 @@
+         runtime->update_texture_bindings("SL_GTAO_N0", views.n0, views.n0);
+         runtime->update_texture_bindings("SL_GTAO_RAW", views.raw_ao, views.raw_ao);
+         runtime->update_texture_bindings("SL_GTAO_DENOISED", views.denoised_ao, views.denoised_ao);
++        runtime->update_texture_bindings("SL_GTAO_NV", views.normal_facing, views.normal_facing);
++        runtime->update_texture_bindings("SL_GTAO_BASELINE", views.unoccluded_baseline, views.unoccluded_baseline);
+@@
+         runtime_state->gtao_raw_bound = views.raw_ao != 0;
+         runtime_state->gtao_denoised_bound = views.denoised_ao != 0;
++        runtime_state->gtao_normal_facing_bound = views.normal_facing != 0;
++        runtime_state->gtao_baseline_bound = views.unoccluded_baseline != 0;
+@@ -321,6 +327,8 @@
+         runtime->update_texture_bindings("SL_GTAO_RAW", none, none);
+         runtime->update_texture_bindings("SL_GTAO_DENOISED", none, none);
++        runtime->update_texture_bindings("SL_GTAO_NV", none, none);
++        runtime->update_texture_bindings("SL_GTAO_BASELINE", none, none);
+@@
+             runtime_state->gtao_raw_bound = false;
+             runtime_state->gtao_denoised_bound = false;
++            runtime_state->gtao_normal_facing_bound = false;
++            runtime_state->gtao_baseline_bound = false;
+@@ -2449,6 +2459,8 @@
+         ImGui::Text("SL_GTAO_RAW: %s", runtime_state->gtao_raw_bound ? "BOUND" : "not bound");
+         ImGui::Text("SL_GTAO_DENOISED: %s", runtime_state->gtao_denoised_bound ? "BOUND" : "not bound");
++        ImGui::Text("SL_GTAO_NV: %s", runtime_state->gtao_normal_facing_bound ? "BOUND" : "not bound");
++        ImGui::Text("SL_GTAO_BASELINE: %s", runtime_state->gtao_baseline_bound ? "BOUND" : "not bound");
+@@ -2514,12 +2526,12 @@
+-            "v1.1d executes direct GPU GTAO immediately before the first qualified Firestorm straight-alpha draw, captures that alpha shader's current inv_proj, and exposes D0/N0/raw/denoised debug semantics for the validation FX. No ReShade technique is invoked from the application callback.");
++            "v1.1e executes direct GPU GTAO immediately before the first qualified Firestorm straight-alpha draw, captures that alpha shader's current inv_proj, and exposes D0/N0/raw/denoised plus N-dot-V and unoccluded-baseline debug semantics for the validation FX. No ReShade technique is invoked from the application callback.");
+@@
+-extern "C" __declspec(dllexport) const char *NAME = "SL Direct GTAO Debug v1.1d";
++extern "C" __declspec(dllexport) const char *NAME = "SL Direct GTAO Debug v1.1e";
+@@
+-        reshade::register_overlay("SL Direct GTAO Debug v1.1d", draw_overlay);
++        reshade::register_overlay("SL Direct GTAO Debug v1.1e", draw_overlay);
+@@
+-        reshade::unregister_overlay("SL Direct GTAO Debug v1.1d", draw_overlay);
++        reshade::unregister_overlay("SL Direct GTAO Debug v1.1e", draw_overlay);

@@ -1,0 +1,499 @@
+--- v0.34/SL_SSR_v0_1_LegacyFirst.fx
++++ v0.35/SL_SSR_v0_1_LegacyFirst.fx
+@@ -1,7 +1,7 @@
+-// SL_SSR_v0_34_GhostCull.fx
++// SL_SSR_v0_35_LegacyResolve.fx
+ // Firestorm-native-data screen-space reflections for ReShade.
+ //
+-// v0.31 lineage / current goals:
++// v0.35 lineage / current goals:
+ //   - legacy SL materials first
+ //   - exact Firestorm SL_DEPTH + SL_NORMALS
+ //   - exact Firestorm projection/inverse projection from SLProbeLighting
+@@ -30,6 +30,11 @@
+ //   - deepen binary refinement so valid silhouette crossings are not misclassified oversized
+ //   - limited skip-through for oversized foreground disocclusion crossings
+ //   - diagnostic classification of every geometry-trace rejection path
++//   - publish accepted-hit distance/screen-stretch/grazing metadata alongside raw SSR
++//   - legacy-first glossiness-aware bilateral reflection filtering
++//   - distance-driven blur broadening for long reflected paths
++//   - optional conservative long-ray fade requiring BOTH long distance and long screen stretch
++//   - keep TraceSSR/TraceSSR_DDA geometry unchanged from v0.34
+ //
+ // Firestorm source contracts used here:
+ //   legacy: specularRect.rgb = specular color, specularRect.a = glossiness
+@@ -212,6 +217,94 @@
+     ui_min = 0.0; ui_max = 0.95; ui_step = 0.05;
+ > = 0.0;
+ 
++// -----------------------------------------------------------------------------
++// v0.35 resolve controls. These operate AFTER tracing and do not change hit logic.
++// -----------------------------------------------------------------------------
++
++uniform int SSRResolveEnable
++<
++    ui_label = "Glossiness Resolve";
++    ui_tooltip = "Legacy-first post-trace resolve. Uses Firestorm legacy specular alpha as glossiness for reflection lobe width; PBR roughness remains a secondary branch.";
++    ui_type = "slider";
++    ui_min = 0; ui_max = 1;
++> = 1;
++
++uniform float SSRResolveMaxBlurPx
++<
++    ui_label = "Resolve Max Blur (px)";
++    ui_tooltip = "Maximum full-resolution blur radius for a fully rough / zero-gloss receiver. Mirror-like legacy surfaces remain sharp.";
++    ui_type = "drag";
++    ui_min = 0.0; ui_max = 24.0; ui_step = 0.25;
++> = 10.0;
++
++uniform float SSRResolveGlossPower
++<
++    ui_label = "Legacy Gloss Curve";
++    ui_tooltip = "Shapes legacy glossiness -> blur. Higher values keep moderately glossy Blinn-Phong surfaces sharper.";
++    ui_type = "drag";
++    ui_min = 0.25; ui_max = 4.0; ui_step = 0.05;
++> = 1.35;
++
++uniform float SSRResolveDistanceBlur
++<
++    ui_label = "Distance Blur Add";
++    ui_tooltip = "Adds blur as accepted ray distance approaches Maximum Ray Distance. This softens long grazing reflections without changing trace acceptance.";
++    ui_type = "drag";
++    ui_min = 0.0; ui_max = 1.0; ui_step = 0.01;
++> = 0.25;
++
++uniform float SSRResolveDepthTolerance
++<
++    ui_label = "Resolve Depth Edge";
++    ui_tooltip = "Relative view-depth tolerance used by the bilateral resolve to avoid smearing reflections across receiver geometry edges.";
++    ui_type = "drag";
++    ui_min = 0.005; ui_max = 0.20; ui_step = 0.005;
++> = 0.035;
++
++uniform float SSRResolveNormalPower
++<
++    ui_label = "Resolve Normal Edge";
++    ui_tooltip = "Normal-similarity exponent for bilateral filtering. Higher values preserve sharper receiver-normal boundaries.";
++    ui_type = "drag";
++    ui_min = 1.0; ui_max = 64.0; ui_step = 1.0;
++> = 24.0;
++
++uniform int SSRLongRayFadeEnable
++<
++    ui_label = "Long-Ray Ghost Fade";
++    ui_tooltip = "Experimental v0.35 ghost discriminator. Fades only hits that are BOTH long in view space and stretched far across the screen. Default OFF until the new diagnostics prove separation.";
++    ui_type = "slider";
++    ui_min = 0; ui_max = 1;
++> = 0;
++
++uniform float SSRLongRayDistanceStart
++<
++    ui_label = "Long-Ray Distance Start";
++    ui_type = "drag";
++    ui_min = 0.0; ui_max = 128.0; ui_step = 0.5;
++> = 14.0;
++
++uniform float SSRLongRayDistanceEnd
++<
++    ui_label = "Long-Ray Distance End";
++    ui_type = "drag";
++    ui_min = 0.5; ui_max = 128.0; ui_step = 0.5;
++> = 30.0;
++
++uniform float SSRLongRayStretchStartPx
++<
++    ui_label = "Long-Ray Stretch Start (px)";
++    ui_type = "drag";
++    ui_min = 0.0; ui_max = 2048.0; ui_step = 8.0;
++> = 240.0;
++
++uniform float SSRLongRayStretchEndPx
++<
++    ui_label = "Long-Ray Stretch End (px)";
++    ui_type = "drag";
++    ui_min = 8.0; ui_max = 4096.0; ui_step = 8.0;
++> = 900.0;
++
+ uniform int SSRPlanarAvatarDebug
+ <
+     ui_label = "Planar Avatar Reflection (debug)";
+@@ -431,7 +524,11 @@
+         "Oversized candidate count\0"
+         "Skip-then-no-hit mask\0"
+         "Deferred-candidate fallback mask\0"
+-        "DDA trace status\0";
++        "DDA trace status\0"
++        "Accepted hit distance\0"
++        "Accepted screen stretch\0"
++        "Receiver grazing angle\0"
++        "Long-ray fade mask\0";
+ > = 0;
+ 
+ uniform float SSRDebugGain
+@@ -529,6 +626,59 @@
+     MipFilter = POINT;
+ };
+ 
++// v0.35 trace metadata. R = accepted view-space hit distance, G = receiver->hit
++// screen travel in native Firestorm pixels, B = receiver grazing factor, A = confidence.
++texture SLSSRMetaTex
++{
++    Width = BUFFER_WIDTH / 2;
++    Height = BUFFER_HEIGHT / 2;
++    Format = RGBA16F;
++};
++
++sampler SLSSRMetaSampler
++{
++    Texture = SLSSRMetaTex;
++    AddressU = CLAMP;
++    AddressV = CLAMP;
++    MinFilter = LINEAR;
++    MagFilter = LINEAR;
++    MipFilter = POINT;
++};
++
++texture SLSSRBlurHTex
++{
++    Width = BUFFER_WIDTH / 2;
++    Height = BUFFER_HEIGHT / 2;
++    Format = RGBA16F;
++};
++
++sampler SLSSRBlurHSampler
++{
++    Texture = SLSSRBlurHTex;
++    AddressU = CLAMP;
++    AddressV = CLAMP;
++    MinFilter = LINEAR;
++    MagFilter = LINEAR;
++    MipFilter = POINT;
++};
++
++texture SLSSRResolvedTex
++{
++    Width = BUFFER_WIDTH / 2;
++    Height = BUFFER_HEIGHT / 2;
++    Format = RGBA16F;
++};
++
++sampler SLSSRResolvedSampler
++{
++    Texture = SLSSRResolvedTex;
++    AddressU = CLAMP;
++    AddressV = CLAMP;
++    MinFilter = LINEAR;
++    MagFilter = LINEAR;
++    MipFilter = POINT;
++};
++
+ // -----------------------------------------------------------------------------
+ // Bridge helpers
+ // -----------------------------------------------------------------------------
+@@ -1640,14 +1790,175 @@
+ }
+ 
+ // -----------------------------------------------------------------------------
++// v0.35 post-trace resolve
++// -----------------------------------------------------------------------------
++
++float SSRReceiverRoughness(float2 screenUV)
++{
++    float4 rawNormal = GetRawNormalData(screenUV);
++    float4 specInfo = GetGBufferSpecular(screenUV);
++
++    if (IsPBR(rawNormal))
++        return saturate(specInfo.g);
++
++    // Firestorm legacy materialF writes the specular exponent/glossiness directly
++    // to specularRect.a. It is lobe-width metadata only: never use it to gate
++    // reflection energy (v0.13 proved RGB can be authoritative with alpha == 0).
++    float glossiness = saturate(specInfo.a);
++    float smooth = pow(glossiness, max(SSRResolveGlossPower, 0.01));
++    return saturate(1.0 - smooth);
++}
++
++float SSRResolveRadiusPx(float2 screenUV, float4 traceMeta)
++{
++    float roughness = SSRReceiverRoughness(screenUV);
++    float distance01 = saturate(traceMeta.r / max(SSRMaxDistance, 1e-3));
++    float effectiveRoughness = saturate(roughness + distance01 * SSRResolveDistanceBlur);
++    return max(SSRResolveMaxBlurPx, 0.0) * effectiveRoughness * effectiveRoughness;
++}
++
++float SSRReceiverBilateralWeight(
++    float centerViewZ,
++    float3 centerNormal,
++    float2 sampleUV)
++{
++    if (!InsideFirestormWorld(sampleUV))
++        return 0.0;
++
++    float sampleDepth = GetRawDepth(sampleUV);
++    if (IsBackgroundDepth(sampleDepth))
++        return 0.0;
++
++    float3 sampleNormal = DecodeFirestormNormalRaw(GetRawNormalData(sampleUV));
++    float normalWeight = pow(saturate(dot(centerNormal, sampleNormal)), max(SSRResolveNormalPower, 1.0));
++
++    float sampleViewZ = abs(ReconstructViewPosition(sampleUV, sampleDepth).z);
++    float tolerance = max(abs(centerViewZ) * max(SSRResolveDepthTolerance, 1e-4), 0.01);
++    float depthWeight = saturate(1.0 - abs(sampleViewZ - centerViewZ) / tolerance);
++    depthWeight *= depthWeight;
++
++    return normalWeight * depthWeight;
++}
++
++float4 SSRResolveHorizontalPS(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target
++{
++    float4 center = tex2D(SLSSRRawSampler, uv);
++    if (SSRResolveEnable <= 0 || center.a <= 1e-5 || !InsideFirestormWorld(uv))
++        return center;
++
++    float4 meta = tex2D(SLSSRMetaSampler, uv);
++    float radiusPx = SSRResolveRadiusPx(uv, meta);
++    if (radiusPx <= 0.25)
++        return center;
++
++    float centerDepth = GetRawDepth(uv);
++    if (IsBackgroundDepth(centerDepth))
++        return center;
++
++    float centerViewZ = abs(ReconstructViewPosition(uv, centerDepth).z);
++    float3 centerNormal = DecodeFirestormNormalRaw(GetRawNormalData(uv));
++    float2 pixel = float2(1.0 / BUFFER_WIDTH, 0.0);
++    float tapStepPx = radiusPx / 4.0;
++
++    float3 sum = 0.0;
++    float sumW = 0.0;
++
++    [unroll]
++    for (int i = -4; i <= 4; ++i)
++    {
++        float fi = (float)i;
++        float2 suv = uv + pixel * (fi * tapStepPx);
++        float4 sampleSSR = tex2D(SLSSRRawSampler, suv);
++        if (sampleSSR.a <= 1e-5)
++            continue;
++
++        float gaussian = exp2(-0.36 * fi * fi);
++        float bilateral = SSRReceiverBilateralWeight(centerViewZ, centerNormal, suv);
++        float w = gaussian * bilateral;
++        sum += sampleSSR.rgb * w;
++        sumW += w;
++    }
++
++    if (sumW <= 1e-5)
++        return center;
++
++    // Keep center confidence/coverage authoritative. Blur the reflection lobe,
++    // not the geometry-hit mask.
++    return float4(sum / sumW, center.a);
++}
++
++float4 SSRResolveVerticalPS(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target
++{
++    float4 centerRaw = tex2D(SLSSRRawSampler, uv);
++    float4 center = tex2D(SLSSRBlurHSampler, uv);
++    if (SSRResolveEnable <= 0 || centerRaw.a <= 1e-5 || !InsideFirestormWorld(uv))
++        return centerRaw;
++
++    float4 meta = tex2D(SLSSRMetaSampler, uv);
++    float radiusPx = SSRResolveRadiusPx(uv, meta);
++    if (radiusPx <= 0.25)
++        return float4(center.rgb, centerRaw.a);
++
++    float centerDepth = GetRawDepth(uv);
++    if (IsBackgroundDepth(centerDepth))
++        return centerRaw;
++
++    float centerViewZ = abs(ReconstructViewPosition(uv, centerDepth).z);
++    float3 centerNormal = DecodeFirestormNormalRaw(GetRawNormalData(uv));
++    float2 pixel = float2(0.0, 1.0 / BUFFER_HEIGHT);
++    float tapStepPx = radiusPx / 4.0;
++
++    float3 sum = 0.0;
++    float sumW = 0.0;
++
++    [unroll]
++    for (int i = -4; i <= 4; ++i)
++    {
++        float fi = (float)i;
++        float2 suv = uv + pixel * (fi * tapStepPx);
++        float4 sampleRaw = tex2D(SLSSRRawSampler, suv);
++        if (sampleRaw.a <= 1e-5)
++            continue;
++
++        float4 sampleSSR = tex2D(SLSSRBlurHSampler, suv);
++        float gaussian = exp2(-0.36 * fi * fi);
++        float bilateral = SSRReceiverBilateralWeight(centerViewZ, centerNormal, suv);
++        float w = gaussian * bilateral;
++        sum += sampleSSR.rgb * w;
++        sumW += w;
++    }
++
++    if (sumW <= 1e-5)
++        return float4(center.rgb, centerRaw.a);
++
++    return float4(sum / sumW, centerRaw.a);
++}
++
++float SSRLongRayRejectAmount(float4 traceMeta)
++{
++    float d0 = min(SSRLongRayDistanceStart, SSRLongRayDistanceEnd - 1e-3);
++    float d1 = max(SSRLongRayDistanceEnd, d0 + 1e-3);
++    float s0 = min(SSRLongRayStretchStartPx, SSRLongRayStretchEndPx - 1e-3);
++    float s1 = max(SSRLongRayStretchEndPx, s0 + 1e-3);
++
++    float longDistance = smoothstep(d0, d1, traceMeta.r);
++    float longStretch = smoothstep(s0, s1, traceMeta.g);
++
++    // Requiring both signals is intentionally conservative: a distant legitimate
++    // reflection or a nearby large screen displacement alone is not enough.
++    return saturate(longDistance * longStretch);
++}
++
++// -----------------------------------------------------------------------------
+ // Passes
+ // -----------------------------------------------------------------------------
+ 
+-float4 SSRTracePS(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target
++float4 SSRTracePS(float4 pos : SV_Position, float2 uv : TEXCOORD, out float4 traceMeta : SV_Target1) : SV_Target0
+ {
++    traceMeta = 0.0;
+     // Ray-hit and raw-hit-color diagnostics test geometry/scene transport only.
+     // They must remain useful even if the material/specular semantic is missing.
+-    const bool geometryDebug = (SSRDisplayMode == 2 || SSRDisplayMode == 11 || SSRDisplayMode == 22 || SSRDisplayMode == 23 || SSRDisplayMode == 24 || SSRDisplayMode == 25 || SSRDisplayMode == 26 || SSRDisplayMode == 27 || SSRDisplayMode == 28 || SSRDisplayMode == 29 || SSRDisplayMode == 30 || SSRDisplayMode == 31 || SSRDisplayMode == 32 || SSRDisplayMode == 33 || SSRDisplayMode == 34);
++    const bool geometryDebug = (SSRDisplayMode == 2 || SSRDisplayMode == 11 || SSRDisplayMode == 22 || SSRDisplayMode == 23 || SSRDisplayMode == 24 || SSRDisplayMode == 25 || SSRDisplayMode == 26 || SSRDisplayMode == 27 || SSRDisplayMode == 28 || SSRDisplayMode == 29 || SSRDisplayMode == 30 || SSRDisplayMode == 31 || SSRDisplayMode == 32 || SSRDisplayMode == 33 || SSRDisplayMode == 34 || SSRDisplayMode == 35 || SSRDisplayMode == 36 || SSRDisplayMode == 37 || SSRDisplayMode == 38);
+ 
+     if (!(geometryDebug ? SSRTraceReady() : SSRReady()) ||
+         !InsideFirestormWorld(uv))
+@@ -1799,6 +2110,14 @@
+ 
+     float3 hitColor = max(GetSceneLinear(hitUV).rgb, 0.0);
+ 
++    float2 originNativeUV = FirestormUV(uv);
++    float2 hitNativeUV = FirestormUV(hitUV);
++    float2 nativeTravelPx = (hitNativeUV - originNativeUV) * max(SLBridgeViewport.zw, float2(1.0, 1.0));
++    float screenStretchPx = length(nativeTravelPx);
++    float3 viewToCamera = normalize(-viewPos);
++    float grazing = 1.0 - saturate(abs(dot(normal, viewToCamera)));
++    traceMeta = float4(hitDistance, screenStretchPx, grazing, confidence);
++
+     // RGB stays in Firestorm linear scene space. A is geometric confidence.
+     return float4(hitColor, confidence);
+ }
+@@ -1817,6 +2136,8 @@
+     float reflectivity = pbr ? PBRReflectivity(specInfo) : max(legacyTint.r, max(legacyTint.g, legacyTint.b));
+ 
+     float4 rawSSR = tex2D(SLSSRRawSampler, uv);
++    float4 traceMeta = tex2D(SLSSRMetaSampler, uv);
++    float4 resolvedSSR = SSRResolveEnable > 0 ? tex2D(SLSSRResolvedSampler, uv) : rawSSR;
+     float alphaCoverage = GetAlphaCoverage(uv);
+     float receiver = 1.0 - saturate(alphaCoverage * AlphaReceiverProtection);
+ 
+@@ -1832,7 +2153,7 @@
+     if (SSRDisplayMode == 24)
+         return float4(saturate(rawSSR.r).xxx, 1.0);
+ 
+-    if (SSRDisplayMode == 25 || SSRDisplayMode == 26 || SSRDisplayMode == 27 || SSRDisplayMode == 28 || SSRDisplayMode == 29 || SSRDisplayMode == 30 || SSRDisplayMode == 31 || SSRDisplayMode == 32 || SSRDisplayMode == 33)
++    if (SSRDisplayMode == 25 || SSRDisplayMode == 26 || SSRDisplayMode == 27 || SSRDisplayMode == 28 || SSRDisplayMode == 29 || SSRDisplayMode == 30 || SSRDisplayMode == 31 || SSRDisplayMode == 32 || SSRDisplayMode == 33 || SSRDisplayMode == 34)
+         return float4(saturate(rawSSR.rgb), 1.0);
+ 
+     if (SSRDisplayMode == 3)
+@@ -1930,6 +2251,31 @@
+         return float4(saturate(m).xxx, 1.0);
+     }
+ 
++    if (SSRDisplayMode == 35)
++    {
++        float m = rawSSR.a > 1e-5 ? saturate(traceMeta.r / max(SSRMaxDistance, 1e-3)) : 0.0;
++        return float4(m.xxx, 1.0);
++    }
++
++    if (SSRDisplayMode == 36)
++    {
++        float debugMax = max(SSRLongRayStretchEndPx, 64.0);
++        float m = rawSSR.a > 1e-5 ? saturate(traceMeta.g / debugMax) : 0.0;
++        return float4(m.xxx, 1.0);
++    }
++
++    if (SSRDisplayMode == 37)
++    {
++        float m = rawSSR.a > 1e-5 ? saturate(traceMeta.b) : 0.0;
++        return float4(m.xxx, 1.0);
++    }
++
++    if (SSRDisplayMode == 38)
++    {
++        float m = rawSSR.a > 1e-5 ? SSRLongRayRejectAmount(traceMeta) : 0.0;
++        return float4(m.xxx, 1.0);
++    }
++
+     if (!SSRReady())
+         return color;
+ 
+@@ -1947,19 +2293,23 @@
+     // remains metadata and does not gate SSR energy.
+     // v0.34: cull low-confidence grazing hits (the gray ghost streak) outright
+     // instead of presenting them faint. Full-confidence reflection is untouched.
+-    float confidenceGate = step(SSRMinConfidence, rawSSR.a);
++    float4 ssrSample = resolvedSSR;
++    float confidenceGate = step(SSRMinConfidence, ssrSample.a);
++    float longRayReject = SSRLongRayFadeEnable > 0 ? SSRLongRayRejectAmount(traceMeta) : 0.0;
++    float longRayWeight = 1.0 - longRayReject;
+ 
+     float materialWeight = pbr ? saturate(reflectivity) : 1.0;
+     float weight =
+-        saturate(rawSSR.a) *
++        saturate(ssrSample.a) *
+         confidenceGate *
++        longRayWeight *
+         materialWeight *
+         fresnel *
+         max(SSRStrength, 0.0) *
+         receiver;
+ 
+     float3 materialTint = pbr ? 1.0.xxx : legacyTint;
+-    float3 reflectionLinear = max(rawSSR.rgb, 0.0) * weight * materialTint;
++    float3 reflectionLinear = max(ssrSample.rgb, 0.0) * weight * materialTint;
+ 
+     // Scalar energy actually applied by this material. Legacy color tint carries
+     // reflectance magnitude, while PBR reflectivity is already in weight.
+@@ -2012,17 +2362,32 @@
+     return color;
+ }
+ 
+-technique SL_SSR_v0_34_GhostCull
++technique SL_SSR_v0_35_LegacyResolve
+ <
+-    ui_label = "SL SSR v0.34 - Ghost Cull";
+-    ui_tooltip = "v0.31 keeps the full v0.30 deferred-candidate marcher AND adds a screen-pixel DDA trace core. Toggle Use Screen-Pixel DDA to compare: DDA slab-tests every stepped pixel with no oversized-skip path, aimed at reflecting thin concave avatar geometry without the skip/smear artifact. Material response and composite are identical.";
++    ui_label = "SL SSR v0.35 - Legacy Resolve";
++    ui_tooltip = "v0.35 preserves v0.34 tracing, publishes accepted hit distance/stretch/grazing metadata, adds legacy Blinn-Phong glossiness-aware bilateral reflection filtering, and provides an optional conservative long-ray ghost fade for diagnosis.";
+ >
+ {
+     pass Trace
+     {
+         VertexShader = PostProcessVS;
+         PixelShader = SSRTracePS;
+-        RenderTarget = SLSSRRawTex;
++        RenderTarget0 = SLSSRRawTex;
++        RenderTarget1 = SLSSRMetaTex;
++    }
++
++    pass ResolveHorizontal
++    {
++        VertexShader = PostProcessVS;
++        PixelShader = SSRResolveHorizontalPS;
++        RenderTarget = SLSSRBlurHTex;
++    }
++
++    pass ResolveVertical
++    {
++        VertexShader = PostProcessVS;
++        PixelShader = SSRResolveVerticalPS;
++        RenderTarget = SLSSRResolvedTex;
+     }
+ 
+     pass Composite

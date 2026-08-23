@@ -1,0 +1,29 @@
+DIRECT GTAO INTEGRATION CONTRACT
+===============================
+
+Current path:
+Firestorm opaque scene -> direct GPU GTAO -> Firestorm straight-alpha -> rest
+of Firestorm renderer -> presentation.
+
+GTAO inputs:
+- SL_DEPTH_PRIMARY_NATIVE / D0
+- SL_NORMALS / N0
+
+Forbidden GTAO dependencies:
+- SL_ALPHA_MATERIAL
+- SL_DEPTH_ALPHA_NATIVE / Dalpha
+- SL_ALPHA_COVERAGE
+- SL_DEPTH_AVATAR_BACK / DavatarBack
+- avatar/hair heuristics
+- alpha receiver protection
+- post-composite alpha recomposition
+
+Proven:
+- pre-alpha boundary detection
+- exact alpha replay/coverage diagnostic path
+- direct GTAO call reaches the boundary once per frame without the old nested
+  effect_runtime::render_technique path
+
+Pending gate:
+Visually validate D0, N0, raw AO, denoised AO, and final opaque composite.
+Do not tune GTAO quality or transparency until these outputs are proven.
