@@ -1,6 +1,6 @@
 # CHAT HANDOFF — READ THIS FIRST
 
-Last updated: 2026-08-22
+Last updated: 2026-08-23
 
 Fresh chats should start from branch `agent/ssr-background-depth` and treat **SSR v0.49 AvatarThicknessTrace** as the integration backbone.
 
@@ -86,6 +86,40 @@ The receiver branch should start from avatar pixels, use available avatar materi
 
 Future work also includes cleaner native material/G-buffer inputs, optional static-world thickness/backface support, and performance optimization after visual correctness.
 
+## Independent GTAO workstream
+
+GTAO is independent of SSR. Do not modify CORE/Hi-Z/Spatial/Avatar SSR while working this stream.
+
+Current coordinator branch: `agent/direct-gtao-integration`.
+
+Validated runtime state:
+
+- Firestorm straight-alpha boundary detection is working without nested ReShade technique execution.
+- Direct GPU GTAO reaches the pre-alpha boundary and successfully applies once per frame.
+- `SL_GTAO_D0`, `SL_GTAO_N0`, `SL_GTAO_RAW`, and `SL_GTAO_DENOISED` are bound for diagnostics.
+- D0 is spatially coherent and is not the cause of the current failure.
+- Raw and denoised AO are populated but currently overwhelmingly dark.
+- Firestorm normal encoding/decoding matches the direct GTAO stereographic XY decode; do not replace the decode speculatively.
+
+Current diagnostic build: v1.1e. It adds:
+
+- `SL_GTAO_NV` — decoded-normal facing term `saturate(dot(N,V))`.
+- `SL_GTAO_BASELINE` — unoccluded slice/basis visibility with horizon sampling removed.
+
+Use those two views to isolate whether the collapse occurs in normal/view basis, slice integration, or horizon updates before any radius/strength/denoise tuning.
+
+Exact status: `addons/SLGTAO/direct-prealpha-v1.1e-debug/PROJECT_STATUS.md`.
+
+## Installable package handoff contract
+
+`tools/installer/SL_InstallLatest.ps1` is the quick-install workflow. Follow `packages/README.md` exactly when producing handoff artifacts.
+
+- Canonical installable packages go under `packages/latest/`.
+- Every installable ZIP must begin with `SL_` because the installer discovers `SL_*.zip` in Downloads.
+- Do not ask the user to rename packages to make the installer work; package naming is the coordinator's responsibility.
+- Packages containing `build-msvc.bat` or an `.addon` require Firestorm closed; FX-only packages may be hot-installed.
+- The current GTAO quick-install artifact is `packages/latest/SL_GTAO_Direct_v1_1e_Debug.zip`.
+
 ## Key runtime lineage
 
 - v0.38: Dstatic hits resolving Cstatic changed dark contamination into a bright background-colored lobe; Cstatic color was not the root cause.
@@ -111,6 +145,7 @@ Full runtime record: `history/ssr/SSR_v0.35-v0.49_SESSION_RUNTIME.md`.
 7. Experimental renderer changes require useful debug views.
 8. Change one subsystem at a time; v0.49 avatar thickness is immutable unless explicitly targeted.
 9. Every experimental technique label must identify its subsystem role using the naming contract above.
+10. Installable ZIP handoffs must follow `packages/README.md` and remain compatible with `tools/installer/SL_InstallLatest.ps1`.
 
 ## Fresh-chat bootstrap
 
@@ -118,8 +153,11 @@ Read:
 
 1. `docs/HANDOFF.md`
 2. `docs/BACKBONE_v0.49.md`
-3. restore/read `addons/SLSSR/current-fx/v0.49-source/`
-4. only if native plumbing is relevant, restore `addons/SLSSR/native-backbone-v0.49/`
-5. `history/ssr/SSR_v0.35-v0.49_SESSION_RUNTIME.md` only when historical diagnosis is needed.
+3. `packages/README.md` before producing any installable artifact
+4. restore/read `addons/SLSSR/current-fx/v0.49-source/`
+5. only if native plumbing is relevant, restore `addons/SLSSR/native-backbone-v0.49/`
+6. `history/ssr/SSR_v0.35-v0.49_SESSION_RUNTIME.md` only when historical diagnosis is needed.
+
+For GTAO work, also read `addons/SLGTAO/direct-prealpha-v1.1e-debug/PROJECT_STATUS.md` and continue from `agent/direct-gtao-integration`.
 
 Do not ask the user to retell the v0.35-v0.49 debugging sequence unless these files are demonstrably insufficient.
