@@ -30,5 +30,11 @@ Interpretation:
 Exact v1.1d -> v1.1e deltas are committed under:
 `addons/SLGTAO/direct-prealpha-v1.1e-debug/source-delta/`
 
-The full handoff source ZIP generated for build/test has SHA-256:
+## Installable handoff
+Canonical quick-install package:
+`packages/latest/SL_GTAO_Direct_v1_1e_Debug.zip`
+
+This name intentionally follows the repository installer contract: installable packages must begin with `SL_` because `tools/installer/SL_InstallLatest.ps1` discovers `SL_*.zip` from Downloads.
+
+SHA-256:
 `0fffbfb4466d8340821302dc3f7ee8b3705ce84de9c212244ba480fbefc96403`
