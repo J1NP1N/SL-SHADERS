@@ -1,0 +1,135 @@
+--- SLAlphaGTAOHook_direct_merge_v1_1d_debug/SLDirectGTAO.cpp	2026-08-23 00:27:52.000000000 +0000
++++ SLAlphaGTAOHook_direct_merge_v1_1e_debug/SLDirectGTAO.cpp	2026-08-23 00:45:55.760798224 +0000
+@@ -325,11 +325,14 @@
+ 
+         api::pipeline edge_pipeline = { 0 };
+         api::pipeline raw_pipeline = { 0 };
++        api::pipeline basis_probe_pipeline = { 0 };
+         api::pipeline bilateral_pipeline = { 0 };
+         api::pipeline composite_pipeline = { 0 };
+ 
+         target edge;
+         target raw;
++        target normal_facing;
++        target unoccluded_baseline;
+         target filter_h;
+         target denoised;
+ 
+@@ -364,6 +367,8 @@
+         {
+             destroy_target(edge);
+             destroy_target(raw);
++            destroy_target(normal_facing);
++            destroy_target(unoccluded_baseline);
+             destroy_target(filter_h);
+             destroy_target(denoised);
+ 
+@@ -614,6 +619,9 @@
+                     shader_source::raw_ps,
+                     raw_pipeline) &&
+                 create_pipeline_from_source(
++                    shader_source::basis_probe_ps,
++                    basis_probe_pipeline) &&
++                create_pipeline_from_source(
+                     shader_source::bilateral_ps,
+                     bilateral_pipeline) &&
+                 create_pipeline_from_source(
+@@ -627,6 +635,8 @@
+                 device->destroy_pipeline(edge_pipeline);
+             if (raw_pipeline != 0)
+                 device->destroy_pipeline(raw_pipeline);
++            if (basis_probe_pipeline != 0)
++                device->destroy_pipeline(basis_probe_pipeline);
+             if (bilateral_pipeline != 0)
+                 device->destroy_pipeline(bilateral_pipeline);
+             if (composite_pipeline != 0)
+@@ -640,6 +650,7 @@
+ 
+             edge_pipeline = { 0 };
+             raw_pipeline = { 0 };
++            basis_probe_pipeline = { 0 };
+             bilateral_pipeline = { 0 };
+             composite_pipeline = { 0 };
+             point_clamp = { 0 };
+@@ -865,6 +876,16 @@
+             !_impl->create_target(
+                 _impl->width,
+                 _impl->height,
++                "SL Direct GTAO N dot V",
++                _impl->normal_facing) ||
++            !_impl->create_target(
++                _impl->width,
++                _impl->height,
++                "SL Direct GTAO unoccluded baseline",
++                _impl->unoccluded_baseline) ||
++            !_impl->create_target(
++                _impl->width,
++                _impl->height,
+                 "SL Direct GTAO bilateral H",
+                 _impl->filter_h) ||
+             !_impl->create_target(
+@@ -913,6 +934,8 @@
+             _impl->n0_srv != 0 &&
+             _impl->edge.resource != 0 &&
+             _impl->raw.resource != 0 &&
++            _impl->normal_facing.resource != 0 &&
++            _impl->unoccluded_baseline.resource != 0 &&
+             _impl->filter_h.resource != 0 &&
+             _impl->denoised.resource != 0 &&
+             same_native_shape(
+@@ -933,11 +956,14 @@
+         out.n0 = _impl->n0_srv;
+         out.raw_ao = _impl->raw.shader_state ? _impl->raw.srv : api::resource_view { 0 };
+         out.denoised_ao = _impl->denoised.shader_state ? _impl->denoised.srv : api::resource_view { 0 };
++        out.normal_facing = _impl->normal_facing.shader_state ? _impl->normal_facing.srv : api::resource_view { 0 };
++        out.unoccluded_baseline = _impl->unoccluded_baseline.shader_state ? _impl->unoccluded_baseline.srv : api::resource_view { 0 };
+         out.width = _impl->width;
+         out.height = _impl->height;
+         out.inputs_valid =
+             out.d0 != 0 && out.n0 != 0 && out.width != 0 && out.height != 0;
+         out.ao_valid = out.raw_ao != 0 && out.denoised_ao != 0;
++        out.basis_debug_valid = out.normal_facing != 0 && out.unoccluded_baseline != 0;
+         return out.inputs_valid;
+     }
+ 
+@@ -1059,6 +1085,40 @@
+         _impl->draw_fullscreen(cmd);
+         _impl->make_shader_resource(cmd, _impl->raw);
+ 
++        // PASS 1A: decoded normal facing term dot(N,V). Validation only.
++        _impl->make_render_target(cmd, _impl->normal_facing);
++        _impl->bind_private_target(
++            cmd,
++            _impl->normal_facing.rtv,
++            _impl->basis_probe_pipeline);
++
++        c = make_constants(in, s, 0);
++        _impl->push_full_constants(cmd, c);
++        _impl->push_textures(
++            cmd,
++            _impl->d0_srv,
++            _impl->d0_srv,
++            _impl->d0_srv);
++        _impl->draw_fullscreen(cmd);
++        _impl->make_shader_resource(cmd, _impl->normal_facing);
++
++        // PASS 1B: unoccluded slice visibility baseline. Validation only.
++        _impl->make_render_target(cmd, _impl->unoccluded_baseline);
++        _impl->bind_private_target(
++            cmd,
++            _impl->unoccluded_baseline.rtv,
++            _impl->basis_probe_pipeline);
++
++        c = make_constants(in, s, 1);
++        _impl->push_full_constants(cmd, c);
++        _impl->push_textures(
++            cmd,
++            _impl->d0_srv,
++            _impl->d0_srv,
++            _impl->d0_srv);
++        _impl->draw_fullscreen(cmd);
++        _impl->make_shader_resource(cmd, _impl->unoccluded_baseline);
++
+         // PASS 2: bilateral horizontal.
+         _impl->make_render_target(cmd, _impl->filter_h);
+         _impl->bind_private_target(
