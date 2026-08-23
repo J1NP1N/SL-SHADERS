@@ -1,0 +1,69 @@
+--- SLDirectGTAO.hpp (v1.1e)
++++ SLDirectGTAO.hpp (v1.1f)
+@@
+         uint32_t denoise_radius = 2;
+ 
+         diagnostic_mode diagnostic = diagnostic_mode::final_opaque_composite;
++        bool passthrough = false;
+     };
+
+--- SLDirectGTAO.cpp (v1.1e)
++++ SLDirectGTAO.cpp (v1.1f)
+@@
+         _impl->bind_private_target(
+             cmd,
+             in.scene_color_rtv,
+             _impl->composite_pipeline);
+ 
++        const int32_t composite_mode =
++            s.passthrough
++                ? 5
++                : static_cast<int32_t>(s.diagnostic);
++
+         c = make_constants(
+             in,
+             s,
+-            static_cast<int32_t>(s.diagnostic));
++            composite_mode);
+
+--- SLDirectGTAOShaders.hpp (v1.1e)
++++ SLDirectGTAOShaders.hpp (v1.1f)
+@@
+     int mode = uCounts.w;
+ 
++    // Validation passthrough: keep generating/exporting all GTAO buffers,
++    // but restore the opaque Firestorm scene color unchanged so a later
++    // ReShade diagnostic FX can inspect the exported semantics cleanly.
++    if (mode == 5)
++    {
++        outColor = scene;
++        return;
++    }
++
+     if (mode == 1)
+
+--- SLAlphaGTAOHook.cpp (v1.1e)
++++ SLAlphaGTAOHook.cpp (v1.1f)
+@@
+         ImGui::Text("Direct GTAO failures total: %llu", static_cast<unsigned long long>(pre_alpha_gtao_failures_total));
+         ImGui::Text("inv_proj capture failures total: %llu", static_cast<unsigned long long>(pre_alpha_gtao_projection_failures_total));
+ 
++        ImGui::Checkbox(
++            "Passthrough (generate/export GTAO only)",
++            &device_state->gtao_settings.passthrough);
++        if (device_state->gtao_settings.passthrough)
++            ImGui::TextUnformatted("Opaque scene composite: BYPASSED; debug semantics remain live");
++
+         int diagnostic = static_cast<int>(device_state->gtao_settings.diagnostic);
+@@
+-            "v1.1e executes direct GPU GTAO immediately before the first qualified Firestorm straight-alpha draw, captures that alpha shader's current inv_proj, and exposes D0/N0/raw/denoised plus N-dot-V and unoccluded-baseline debug semantics for the validation FX. No ReShade technique is invoked from the application callback.");
++            "v1.1f executes direct GPU GTAO immediately before the first qualified Firestorm straight-alpha draw, captures that alpha shader's current inv_proj, and exposes D0/N0/raw/denoised plus N-dot-V and unoccluded-baseline debug semantics for the validation FX. No ReShade technique is invoked from the application callback.");
+@@
+-extern "C" __declspec(dllexport) const char *NAME = "SL Direct GTAO Debug v1.1e";
++extern "C" __declspec(dllexport) const char *NAME = "SL Direct GTAO Debug v1.1f";
+@@
+-        reshade::register_overlay("SL Direct GTAO Debug v1.1e", draw_overlay);
++        reshade::register_overlay("SL Direct GTAO Debug v1.1f", draw_overlay);
+@@
+-        reshade::unregister_overlay("SL Direct GTAO Debug v1.1e", draw_overlay);
++        reshade::unregister_overlay("SL Direct GTAO Debug v1.1f", draw_overlay);
