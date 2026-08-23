@@ -116,9 +116,11 @@ At `reshade_begin_effects`, the bridge updates matching scalar uniforms by name 
 Main G-buffer texture semantics are bound only when:
 
 1. a source-backed main marker confirmed the currently observed target set; and
-2. ReShade can create a supported shader-resource view of the underlying OpenGL resource.
+2. ReShade can create bridge-owned, one-mip OpenGL publication textures and shader-resource views for all four confirmed resources.
 
-The views are transient for the ReShade effect-render interval and are removed/destroyed at `reshade_finish_effects`. The bridge does not issue render commands, copies, barriers, clears, or draws.
+Phase 1.1 does not reuse application render-target/depth views outside the callback that supplied them. It also does not rely on a same-format `create_resource_view` call to isolate mip state, because the ReShade OpenGL backend aliases the original texture in that case. Instead, one persistent single-mip publication resource/SRV is allocated per semantic per confirmed resource generation. At `reshade_begin_effects`, the current authoritative source contents are copied into those private publication textures before effects execute. The semantic bindings remain installed until invalidation/reload; the resources/views are not recreated every frame.
+
+The copy targets are bridge-private resources. No Firestorm render target, scene color, depth value, or other application image is modified. `Bridge image writes` continues to mean writes to Firestorm-owned image resources and remains zero.
 
 ### Diagnostics
 
@@ -157,8 +159,9 @@ The important marker is `MAIN_GBUFFER_BOUND`: it should be emitted while/after `
 - `BridgeCore` owns classification, resource, stage, counters, and matrix snapshots.
 - Render/overlay access is serialized by a mutex because the ReShade UI and render callbacks must not race.
 - ReShade effect runtimes own a small private `RuntimeBindings` structure.
-- Shader-resource views created by the bridge exist only between ReShade begin/finish-effects callbacks.
-- `destroy_resource`, swapchain resize, device destruction, and future Firestorm invalidation markers clear stale semantic resource handles immediately.
+- Each effect runtime owns persistent private one-mip publication resources/SRVs keyed by the confirmed semantic resource generation.
+- Their contents are refreshed at `reshade_begin_effects`; they are not destroyed at `reshade_finish_effects`.
+- `destroy_resource`, swapchain resize, device destruction, Firestorm resource invalidation markers, resource-generation changes, effect-runtime destruction, and add-on teardown clear semantic bindings and release stale publication resources/views.
 - A semantic invalidation increments `SL_RESOURCE_GENERATION`.
 
 ## Frame identity
