@@ -1,0 +1,52 @@
+name: Materialize GTAO v1.1h source
+
+on:
+  push:
+    branches:
+      - agent/direct-gtao-integration
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/direct-gtao-integration
+          fetch-depth: 0
+
+      - name: Extract verified v1.1g package as v1.1h working tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          target='addons/SLGTAO/direct-prealpha-v1.1h-operating-modes'
+          if [[ -f "$target/SLDirectGTAO.cpp" ]]; then
+            echo 'v1.1h working tree already materialized; nothing to do.'
+            exit 0
+          fi
+
+          rm -rf /tmp/gtao-v11g
+          mkdir -p /tmp/gtao-v11g "$target"
+          unzip -q packages/latest/SL_GTAO_Direct_v1_1g_CleanPassthrough.zip -d /tmp/gtao-v11g
+          source_root="$(find /tmp/gtao-v11g -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+          test -n "$source_root"
+          cp -a "$source_root"/. "$target"/
+          rm -rf "$target/repo_delta"
+
+          test -f "$target/SLAlphaGTAOHook.cpp"
+          test -f "$target/SLDirectGTAO.cpp"
+          test -f "$target/SLDirectGTAOShaders.hpp"
+          test -f "$target/SL_DirectGTAO_Debug.fx"
+          test -f "$target/CMakeLists.txt"
+          test -f "$target/build-msvc.bat"
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add "$target"
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m 'Materialize v1.1g source for GTAO v1.1h corrective work'
+          git push origin HEAD:agent/direct-gtao-integration
