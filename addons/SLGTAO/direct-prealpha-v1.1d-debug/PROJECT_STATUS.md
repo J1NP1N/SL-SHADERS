@@ -17,4 +17,5 @@
 ## Validation target
 A successful frame should show one qualified transition, one direct attempt, one direct applied run, zero projection failures, and all four debug semantics bound after the pass has executed.
 
-Full source package: `packages/SLGTAO/SLAlphaGTAOHook_direct_merge_v1_1d_debug.zip`.
+Source milestone: `addons/SLGTAO/direct-prealpha-v1.1d-debug/`.
+Handoff package SHA-256: `9d1f0e7dd4ff39f1bf569b6571fcd2a3d0f7e74e0ccc586bad1e1e71b038522b`.
