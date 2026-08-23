@@ -2,7 +2,7 @@
 
 ## Contract rules
 
-A semantic is published only to the degree supported by evidence. A non-null resource binding means the bridge has both a source-backed main classification and a supported ReShade shader-resource view. Candidate-only resources remain unbound.
+A semantic is published only to the degree supported by evidence. A non-null resource binding means the bridge has both a source-backed main classification and a bridge-owned one-mip ReShade publication SRV refreshed from that authoritative resource immediately before effects execute. Candidate-only resources remain unbound.
 
 Depth resource identity and depth content semantics are separate. The accepted audits source-prove that `mMainRT.deferredScreen` and `mMainRT.screen` share the same depth texture, while later post-deferred rendering can change its contents. Consumers must check `SL_RENDER_STAGE` and must not treat a stable depth handle as a frozen G-buffer-depth snapshot.
 
@@ -53,7 +53,7 @@ Matrix variables are updated only when `SL_MATRIX_VALID != 0`; otherwise the bri
 | `SL_RESOURCE_GENERATION` | Monotonic epoch for confirmed semantic main resource-set replacement/invalidation | Audit lifecycle findings + ReShade destroy/resize observation | Always readable | Bridge lifetime | IMPLEMENTED |
 | `SL_MAIN_CLASSIFICATION` | Classifier state enum | `FS-AUX-001` plus bridge state machine | Always readable | Current observation/context | IMPLEMENTED |
 | `SL_MAIN_CONFIDENCE` | Evidence class for classification | Bridge evidence policy | Always readable | Current observation/context | IMPLEMENTED |
-| `SL_MAIN_GBUFFER_VALID` | All four main G-buffer shader-resource views are currently usable by the effect runtime | ReShade supported resource-view/update-texture API + confirmed-main policy | During ReShade effect rendering | Effect-render interval | PARTIAL |
+| `SL_MAIN_GBUFFER_VALID` | All four authoritative sources have valid persistent publication resources/SRVs and were refreshed for the current effect execution | ReShade supported resource/create-view/copy/update-texture API + confirmed-main policy | During ReShade effect rendering | Current effect execution; publication objects persist for resource generation | PARTIAL |
 | `SL_MATRIX_VALID` | All six currently supported matrix fields were supplied through the native marker ABI | `FS-CAMERA-001`, `FS-TEMPORAL-001` + bridge ABI | Marker-defined main stage | Until invalidation/new marker | REQUIRES_FIRESTORM_PATCH |
 
 `PARTIAL` for the G-buffer resources means the ReShade-side resource tracking and shader-binding path is implemented, but pure external observation cannot authoritatively decide that a deferred-like target is `mMainRT.deferredScreen`. In an unpatched Firestorm run these semantics therefore remain null by design.
@@ -106,4 +106,4 @@ resource generation N
     +-- MAIN_POST_DEFERRED:    same resource may now include later depth-writing categories
 ```
 
-Consumers that require immutable G-buffer-complete depth need a separate snapshot/copy design. Phase 1 intentionally does not create such a copy because passthrough is observation-only and no visual algorithm requires it yet.
+Phase 1.1 copies the authoritative depth resource into a bridge-private one-level publication texture immediately before ReShade effects execute. That publication copy is a readable effect-time snapshot, not a promise that its contents still equal the earlier `MAIN_GBUFFER_COMPLETE` depth if Firestorm has written additional shared depth in between.
