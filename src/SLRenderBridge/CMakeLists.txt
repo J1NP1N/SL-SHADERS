@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(SLRenderBridge VERSION 0.1.0 LANGUAGES CXX)
+project(SLRenderBridge VERSION 0.1.1 LANGUAGES CXX)
 
 option(SLRB_BUILD_TESTS "Build deterministic bridge-core tests" ON)
 option(SLRB_BUILD_ADDON "Build the Windows ReShade add-on" ${WIN32})
