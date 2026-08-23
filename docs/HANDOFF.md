@@ -92,25 +92,27 @@ GTAO is independent of SSR. Do not modify CORE/Hi-Z/Spatial/Avatar SSR while wor
 
 Current coordinator branch: `agent/direct-gtao-integration`.
 
-Validated runtime state:
+Validated runtime state from prior builds:
 
-- Firestorm straight-alpha boundary detection is working without nested ReShade technique execution.
-- Direct GPU GTAO reaches the pre-alpha boundary and successfully applies once per frame.
-- `SL_GTAO_D0`, `SL_GTAO_N0`, `SL_GTAO_RAW`, and `SL_GTAO_DENOISED` are bound for diagnostics.
-- D0 is spatially coherent and is not the cause of the current failure.
+- Firestorm straight-alpha boundary detection is stable without nested ReShade technique execution.
+- Direct GPU GTAO reaches the pre-alpha boundary and has successfully applied once per frame in prior runtime tests.
+- `SL_GTAO_D0`, `SL_GTAO_N0`, `SL_GTAO_RAW`, and `SL_GTAO_DENOISED` were proven bound for diagnostics.
+- D0 is spatially coherent and is not the cause of the current AO failure.
 - Raw and denoised AO are populated but currently overwhelmingly dark.
 - Firestorm normal encoding/decoding matches the direct GTAO stereographic XY decode; do not replace the decode speculatively.
 
-Current diagnostic build: v1.1g. It preserves the v1.1e basis diagnostics and adds clean passthrough behavior:
+Current corrective build: **v1.2.0 Firestorm operating modes**.
 
-- `SL_GTAO_NV` — decoded-normal facing term `saturate(dot(N,V))`.
-- `SL_GTAO_BASELINE` — unoccluded slice/basis visibility with horizon sampling removed.
-- `Passthrough (clean FX validation)` leaves GTAO generation and debug exports active while bypassing the direct opaque composite and disabling all legacy boundary diagnostics/replay/recompose paths.
-- In passthrough, `SL_ALPHA_PRE_COLOR`, `SL_ALPHA_POST_COLOR`, and `SL_ALPHA_MASK` are unbound and Firestorm alpha replay is skipped.
+- `Firestorm Baseline` is the default and must execute zero GTAO fullscreen work, zero scene-color copies/writes, and zero alpha replay.
+- `GTAO Diagnostics / Generate Only` may generate/export requested private GTAO resources but must never copy or write Firestorm scene color.
+- `GTAO Active` is the only mode allowed to copy/composite Firestorm scene color.
+- `SL_DirectGTAO_Debug.fx` defaults to debug view 0 (native backbuffer) and Baseline forces native backbuffer display even if a diagnostic view was previously saved.
+- N dot V and unoccluded-baseline passes are diagnostics-only and do not run in GTAO Active.
+- Pipeline restoration tracks effective canonical stages deterministically; MRT state is stored without four-target truncation; alpha replay restores captured Firestorm alpha blend factors/depth-write state; stale Firestorm resources/views/pipelines are invalidated through ReShade destruction events; settings changes are synchronized.
+- Authoritative shader source is `shaders/*.glsl`; the embedded header is generated/verified at build time.
 
-Use `SL_DirectGTAO_Debug.fx` only with clean passthrough enabled when inspecting GTAO buffers.
-
-Exact status: `addons/SLGTAO/direct-prealpha-v1.1g-clean-passthrough/PROJECT_STATUS.md`.
+Exact status: `addons/SLGTAO/direct-prealpha-v1.2.0-firestorm-modes/PROJECT_STATUS.md`.
+Reviewer-response report: `addons/SLGTAO/direct-prealpha-v1.2.0-firestorm-modes/ENGINEERING_REVIEW_v1.2.0.md`.
 
 ## Installable package handoff contract
 
@@ -120,7 +122,8 @@ Exact status: `addons/SLGTAO/direct-prealpha-v1.1g-clean-passthrough/PROJECT_STA
 - Every installable ZIP must begin with `SL_` because the installer discovers `SL_*.zip` in Downloads.
 - Do not ask the user to rename packages to make the installer work; package naming is the coordinator's responsibility.
 - Packages containing `build-msvc.bat` or an `.addon` require Firestorm closed; FX-only packages may be hot-installed.
-- The current GTAO quick-install artifact is `packages/latest/SL_GTAO_Direct_v1_1g_CleanPassthrough.zip`.
+- Current GTAO quick-install artifact: `packages/latest/SL_GTAO_Direct_v1_2_0_FirestormModes.zip`.
+- Current GTAO artifact SHA-256: `c1574fae096f696276c077e55abef49e641202386e8e3bc3ae7545e77e287d47`.
 
 ## Key runtime lineage
 
@@ -148,6 +151,7 @@ Full runtime record: `history/ssr/SSR_v0.35-v0.49_SESSION_RUNTIME.md`.
 8. Change one subsystem at a time; v0.49 avatar thickness is immutable unless explicitly targeted.
 9. Every experimental technique label must identify its subsystem role using the naming contract above.
 10. Installable ZIP handoffs must follow `packages/README.md` and remain compatible with `tools/installer/SL_InstallLatest.ps1`.
+11. GTAO Baseline and Diagnostics invariants are behavioral contracts: do not implement them with visually-similar copyback/composite work.
 
 ## Fresh-chat bootstrap
 
@@ -160,6 +164,6 @@ Read:
 5. only if native plumbing is relevant, restore `addons/SLSSR/native-backbone-v0.49/`
 6. `history/ssr/SSR_v0.35-v0.49_SESSION_RUNTIME.md` only when historical diagnosis is needed.
 
-For GTAO work, also read `addons/SLGTAO/direct-prealpha-v1.1g-clean-passthrough/PROJECT_STATUS.md` and continue from `agent/direct-gtao-integration`.
+For GTAO work, continue from `agent/direct-gtao-integration`, use `packages/latest/SL_GTAO_Direct_v1_2_0_FirestormModes.zip`, and treat its `PROJECT_STATUS.md` plus `ENGINEERING_REVIEW_v1.2.0.md` as the current acceptance record.
 
 Do not ask the user to retell the v0.35-v0.49 debugging sequence unless these files are demonstrably insufficient.
