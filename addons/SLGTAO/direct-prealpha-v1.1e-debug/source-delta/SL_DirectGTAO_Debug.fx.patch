@@ -1,0 +1,52 @@
+--- SLAlphaGTAOHook_direct_merge_v1_1d_debug/SL_DirectGTAO_Debug.fx	2026-08-23 00:27:52.000000000 +0000
++++ SLAlphaGTAOHook_direct_merge_v1_1e_debug/SL_DirectGTAO_Debug.fx	2026-08-23 00:45:25.426761454 +0000
+@@ -17,7 +17,9 @@
+         "Raw AO\0"
+         "Denoised AO\0"
+         "D0 depth\0"
+-        "N0 normals\0";
++        "N0 normals\0"
++        "N dot V\0"
++        "Unoccluded slice baseline\0";
+ > = 1;
+@@ -31,6 +33,8 @@
+ texture SLGTAODenoisedTex : SL_GTAO_DENOISED;
+ texture SLGTAOD0Tex : SL_GTAO_D0;
+ texture SLGTAON0Tex : SL_GTAO_N0;
++texture SLGTAONVTex : SL_GTAO_NV;
++texture SLGTAOBaselineTex : SL_GTAO_BASELINE;
+@@ -60,6 +64,20 @@
+     MinFilter = POINT; MagFilter = POINT; MipFilter = POINT;
+ };
++
++sampler SLGTAONVSampler
++{
++    Texture = SLGTAONVTex;
++    AddressU = CLAMP; AddressV = CLAMP;
++    MinFilter = POINT; MagFilter = POINT; MipFilter = POINT;
++};
++
++sampler SLGTAOBaselineSampler
++{
++    Texture = SLGTAOBaselineTex;
++    AddressU = CLAMP; AddressV = CLAMP;
++    MinFilter = POINT; MagFilter = POINT; MipFilter = POINT;
++};
+@@ -113,8 +131,20 @@
+-    float3 n = SLDirectGTAODecodeN0(tex2D(SLGTAON0Sampler, uv));
+-    return float4(n * 0.5 + 0.5, 1.0);
++    if (SLDirectGTAODebugView == 4)
++    {
++        float3 n = SLDirectGTAODecodeN0(tex2D(SLGTAON0Sampler, uv));
++        return float4(n * 0.5 + 0.5, 1.0);
++    }
++
++    if (SLDirectGTAODebugView == 5)
++    {
++        float nv = saturate(tex2D(SLGTAONVSampler, uv).r);
++        return float4(nv.xxx, 1.0);
++    }
++
++    float baseline = saturate(tex2D(SLGTAOBaselineSampler, uv).r);
++    return float4(baseline.xxx, 1.0);
+ }
