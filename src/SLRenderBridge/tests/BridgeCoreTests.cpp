@@ -1,6 +1,8 @@
 #include "slrenderbridge/BridgeCore.hpp"
+#include "slrenderbridge/PublicationPolicy.hpp"
 
 #include <cassert>
+#include <cstring>
 #include <iostream>
 
 using namespace slrb;
@@ -201,6 +203,48 @@ void test_passthrough_never_records_image_writes()
     assert(core.snapshot().image_write_count == 0);
 }
 
+void test_publication_policy_reuses_same_generation_and_sources()
+{
+    BridgeCore core;
+    core.on_native_event(ev(SLRB_EVENT_MAIN_VIEW_BEGIN, 7));
+    core.on_bind_target(deferred(1200));
+    assert(core.on_native_event(ev(SLRB_EVENT_MAIN_GBUFFER_BOUND, 7)));
+
+    const auto snapshot = core.snapshot();
+    const PublicationKey key = make_publication_key(snapshot);
+    assert(key.valid());
+    assert(!publication_requires_rebuild(key, snapshot));
+}
+
+void test_publication_policy_rebuilds_on_generation_change()
+{
+    BridgeCore core;
+    core.on_native_event(ev(SLRB_EVENT_MAIN_VIEW_BEGIN, 8));
+    core.on_bind_target(deferred(1300));
+    assert(core.on_native_event(ev(SLRB_EVENT_MAIN_GBUFFER_BOUND, 8)));
+
+    const PublicationKey old_key = make_publication_key(core.snapshot());
+    core.on_renderer_reset("publication policy synthetic reset");
+    assert(publication_requires_rebuild(old_key, core.snapshot()));
+
+    core.on_native_event(ev(SLRB_EVENT_MAIN_VIEW_BEGIN, 9));
+    core.on_bind_target(deferred(1400));
+    assert(core.on_native_event(ev(SLRB_EVENT_MAIN_GBUFFER_BOUND, 9)));
+    assert(publication_requires_rebuild(old_key, core.snapshot()));
+}
+
+void test_publication_policy_fails_closed_for_incomplete_set()
+{
+    BridgeSnapshot snapshot;
+    snapshot.resource_generation = 12;
+    snapshot.confirmed_main_gbuffer = deferred(1500);
+    snapshot.confirmed_main_gbuffer.colors[2] = {};
+
+    const PublicationKey key = make_publication_key(snapshot);
+    assert(!key.valid());
+    assert(publication_requires_rebuild(PublicationKey{}, snapshot));
+}
+
 void test_matrix_marker_requires_complete_matrix_set()
 {
     BridgeCore core;
@@ -232,6 +276,9 @@ int main()
     test_resource_destroy_clears_stale_main_handles();
     test_ambiguous_external_input_is_not_published();
     test_passthrough_never_records_image_writes();
+    test_publication_policy_reuses_same_generation_and_sources();
+    test_publication_policy_rebuilds_on_generation_change();
+    test_publication_policy_fails_closed_for_incomplete_set();
     test_matrix_marker_requires_complete_matrix_set();
     std::cout << "SLRenderBridge core tests: PASS\n";
     return 0;
